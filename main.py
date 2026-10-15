@@ -1,6 +1,8 @@
 from simulator.data import download_prices
 from simulator.estimation import estimate_gbm_params
 from simulator.gbm import simulate_gbm
+from simulator.risk import risk_summary
+from math import exp
 import matplotlib.pyplot as plt
 
 TICKER = "PETR4.SA"
@@ -15,6 +17,10 @@ print(f"mu = {mu:.2%} | sigma = {sigma:.2%}")
 
 paths = simulate_gbm(s0 = s0, mu = mu, sigma = sigma,
                      horizon = 1, steps = 252, n_sims = 1000, seed = 42)
+
+summary = risk_summary(paths, confidence=0.95)
+print(summary)
+print(f"Preço esperado teórico (1 ano): {s0 * exp(mu):.2f}")
 
 print("Média dos preços finais: ", paths[-1].mean())
 print("Desvio padrão dos preços finais: ", paths[-1].std())
