@@ -1,4 +1,4 @@
-"""Run a GBM simulation and summarize terminal price risk."""
+"""Analyze a selected company and simulate its price with GBM."""
 
 import argparse
 from datetime import datetime, timezone
@@ -9,8 +9,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from simulator.data import download_prices
+from simulator.fundamentals import download_company, format_company, normalize_ticker
 from simulator.plotting import plot_convergence
-from simulator.report import (SimulationConfig, historical_snapshot, read_replay,
+from simulator.report import (SimulationConfig, historical_snapshot, read_report,
                               run_simulation, write_report)
 
 
@@ -56,7 +57,8 @@ def nonnegative_int(value: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ticker", default="PETR4.SA", help="market ticker")
+    parser.add_argument("--ticker", type=normalize_ticker,
+                        help="market ticker (asks when omitted; e.g. PETR4.SA, AAPL)")
     parser.add_argument("--period", default="3y", help="price history period")
     parser.add_argument("--horizon", type=positive_float, default=1.0,
                         help="simulation horizon in years (default: 1)")
@@ -78,16 +80,45 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    company = None
     if args.replay:
-        snapshot, config = read_replay(args.replay)
+        saved = read_report(args.replay)
+        snapshot = saved["historical_data"]
+        config = SimulationConfig(**saved["simulation"])
+        company = saved.get("company_analysis")
     else:
-        prices = download_prices(args.ticker, period=args.period)
+        if args.ticker is None:
+            while True:
+                try:
+                    args.ticker = normalize_ticker(input(
+                        "Digite o ticker da ação (ex.: PETR4.SA, VALE3.SA, AAPL): "))
+                    break
+                except ValueError as exc:
+                    print(exc)
+                except (EOFError, KeyboardInterrupt):
+                    parser.error("Informe uma ação com --ticker (ex.: --ticker PETR4.SA).")
+        print(f"Consultando {args.ticker}...")
+        company = download_company(args.ticker)
+        print(format_company(company))
+        try:
+            prices = download_prices(args.ticker, period=args.period)
+        except Exception:
+            parser.exit(1, f"Não foi possível obter preços de {args.ticker}. "
+                        "Confira o ticker, o período e a conexão e tente novamente.\n")
         snapshot = historical_snapshot(prices, ticker=args.ticker, period=args.period,
                                        retrieved_at=datetime.now(timezone.utc).isoformat())
         config = SimulationConfig(args.horizon, args.steps, args.n_sims,
                                   args.seed, args.confidence)
     report, paths = run_simulation(snapshot, config)
+    if company is not None:
+        report["company_analysis"] = company
+        if args.replay:
+            print(format_company(company))
+    elif args.replay:
+        print("Este relatório antigo não contém indicadores da empresa.")
+    print(f"\nSimulação GBM: {snapshot['ticker']} (preços históricos ajustados)")
     s0 = report["last_price"]
     mu, sigma = report["parameters"]["mu"], report["parameters"]["sigma"]
     print(f"Último preço: {s0:.2f}")

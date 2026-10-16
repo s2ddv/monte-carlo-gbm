@@ -116,10 +116,18 @@ def write_report(report, path):
     path.write_text(content, encoding="utf-8")
 
 
-def read_replay(path):
+def read_report(path):
+    """Read a validated report, including any saved company snapshot."""
     report = json.loads(Path(path).read_text(encoding="utf-8"))
     if report["schema_version"] != 1 or report["model"] != "single_asset_gbm":
         raise ValueError("Unsupported report schema/model.")
     snapshot = report["historical_data"]
     prices_from_snapshot(snapshot)
+    SimulationConfig(**report["simulation"])
+    return report
+
+
+def read_replay(path):
+    report = read_report(path)
+    snapshot = report["historical_data"]
     return snapshot, SimulationConfig(**report["simulation"])

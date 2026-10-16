@@ -9,6 +9,7 @@ import pytest
 
 import main as app
 from simulator.plotting import plot_convergence
+from simulator.fundamentals import company_snapshot
 from simulator.report import (SimulationConfig, historical_snapshot,
                               prices_from_snapshot, read_replay,
                               run_simulation, write_report)
@@ -56,8 +57,12 @@ def test_report_records_inputs_calibration_results_and_replays(snapshot, tmp_pat
     assert replay == report
 
 
-def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_company", [False, True])
+def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_company):
     report, _ = run_simulation(snapshot, SimulationConfig(steps=2, n_sims=20))
+    if with_company:
+        report["company_analysis"] = company_snapshot(
+            "SYNTHETIC", {"totalRevenue": 12345}, retrieved_at="2026-01-09T12:00:00Z")
     source = tmp_path / "source.json"
     destination = tmp_path / "replay.json"
     write_report(report, source)
@@ -66,6 +71,8 @@ def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch):
         pytest.fail("Replay must not access the data provider")
 
     monkeypatch.setattr(app, "download_prices", forbidden_download)
+    monkeypatch.setattr(app, "download_company", forbidden_download)
+    monkeypatch.setattr("builtins.input", forbidden_download)
     app.main(["--replay", str(source), "--report", str(destination), "--no-plot"])
     assert source.read_bytes() == destination.read_bytes()
     assert destination.with_name("replay-convergence.png").read_bytes().startswith(b"\x89PNG")

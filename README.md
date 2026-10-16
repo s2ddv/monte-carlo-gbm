@@ -137,6 +137,7 @@ monte-carlo-gbm/
 │   └── simulator/
 │       ├── __init__.py
 │       ├── data.py          # Historical data download and cleaning
+│       ├── fundamentals.py  # Company metrics, ticker input and terminal summary
 │       ├── estimation.py    # Drift and volatility estimation
 │       ├── gbm.py           # GBM path simulation
 │       ├── risk.py          # VaR, CVaR and summary statistics
@@ -183,11 +184,16 @@ pip install -r requirements.txt
 
 ## Usage
 
-Run the application with its default ticker and simulation settings:
+Run the application and enter the stock you want to analyze when prompted:
 
 ```bash
 python main.py
 ```
+
+For example, enter `AAPL`, `MSFT`, `PETR4.SA` or `VALE3.SA`. Input is trimmed
+and uppercased; Brazilian shorthand such as `PETR4` becomes `PETR4.SA`.
+For other exchanges, supply the Yahoo Finance suffix explicitly (e.g. `SAP.DE`).
+Blank input or multiple symbols prompt again. There is no default stock.
 
 To run without opening a chart, or to choose simulation parameters:
 
@@ -196,8 +202,52 @@ python main.py --ticker PETR4.SA --period 3y --horizon 1 --steps 252 --n-sims 10
 ```
 
 Use `python main.py --help` for all options. A new simulation downloads historical
-prices and requires network access. `--no-plot` suppresses the interactive path
+prices and company fundamentals and requires network access. `--ticker` skips
+the prompt, including for scripts and CI. If stdin ends before a ticker is
+provided, the CLI explains how to use `--ticker` and exits. `--no-plot` suppresses the interactive path
 window; it still saves the JSON report and convergence PNG.
+
+### Company analysis
+
+Before the GBM simulation, a Portuguese terminal summary displays 30 indicators:
+
+| Area | Indicators |
+| --- | --- |
+| Market and valuation | Quote, market capitalization, enterprise value (EV), trailing and forward P/E (P/L), P/B (P/VP), P/S, EV/revenue, EV/EBITDA |
+| Results and growth | Revenue, net income attributable to common shareholders, EBITDA, quarterly year-over-year revenue and earnings growth |
+| Profitability | Gross, operating and net margins; ROE and ROA |
+| Cash and financial position | Operating and free cash flow, total cash and debt, current and quick ratios |
+| Dividends and market risk | Trailing annual dividend yield, payout ratio, beta, 52-week low and high |
+
+The source is [Yahoo Finance through `yfinance.Ticker.get_info`](https://ranaroussi.github.io/yfinance/reference/api/yfinance.Ticker.get_info.html).
+The summary includes the company name, sector, industry, retrieval time in UTC,
+quote time and most recent quarter end when supplied. Trading and financial
+statement currencies are shown separately; amounts are unabridged, with comma
+thousands separators and decimal points. Missing currencies are explicitly
+unknown. TTM means trailing twelve months; forward P/E is a provider estimate,
+and growth compares a quarter with the same quarter of the previous year.
+The provider may use different reference dates across fields; a retrieval
+timestamp does not imply that every metric was updated at that time.
+
+These are common equity-analysis categories, including the price and enterprise
+multiples discussed by [CFA Institute](https://www.cfainstitute.org/insights/professional-learning/refresher-readings/2026/market-based-valuation-price-enterprise-value-multiples).
+Compare companies within their sector and inspect their financial statements;
+there is no universal “Wall Street” threshold that makes a stock cheap or good.
+Market cap and EV are market valuations, not a calculated intrinsic fair value.
+This feature does not perform DCF, comparable-company selection or issue a
+buy/sell recommendation. The existing GBM output remains a separate price-risk
+simulation and does not use these fundamentals to estimate fair value.
+
+Missing, nonfinite or inapplicable data appears as `N/D` (`null` in JSON), never
+as a fabricated zero. Actual zero and negative cash flow/margins are preserved.
+P/E, P/B and EV/EBITDA are suppressed when the provider reports a nonpositive
+denominator or multiple. Percent fields use the provider's fractional units;
+dividend yield specifically uses `trailingAnnualDividendYield`. Ratios are
+provider-reported, with no local FX conversion or recomputation from potentially
+incompatible currencies. Non-equity instruments receive a warning because
+company metrics may not apply. A fundamentals-provider failure is shown explicitly
+and the price simulation can still run; missing price history stops it with an
+actionable error.
 
 ### Reproducible reports
 
@@ -224,6 +274,13 @@ The JSON records:
 - Simulated and theoretical mean, variance and quantiles, with absolute and
   relative errors, risk metrics and every convergence checkpoint.
 - Python and relevant package versions, RNG and numerical conventions.
+- `company_analysis`: company identity, source URL, retrieval/reference dates,
+  currencies, each metric's provider field, value, period and availability reason.
+
+Replay restores the saved company analysis without prompting or accessing the
+provider. Its original retrieval time remains visible; these are historical
+snapshots, not refreshed quotes. Older reports without `company_analysis`
+continue to replay and explicitly state that no fundamentals were saved.
 
 The snapshot preserves the inputs even when the provider revises adjusted
 prices. Replay recalibrates parameters and recomputes results from those inputs.
@@ -283,6 +340,9 @@ statistics, nested convergence, fixed-seed simulation, degenerate cases,
 calibration, report fields, JSON round trips, snapshot integrity and offline
 CLI replay. Provider availability and interactive desktop windows are separate
 integration checks, not proven by these tests.
+
+Company tests additionally cover ticker prompts and normalization, financial
+units, missing values, losses, provider failures and offline fundamentals replay.
 
 The snippet below illustrates the core simulation logic: 1,000 one-year paths with 252 daily steps.
 
