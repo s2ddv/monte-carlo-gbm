@@ -40,24 +40,26 @@ This project aims to:
 
 ## Features
 
-**Core (in scope for the first release)**
+**Implemented (single asset GBM)**
 
 - Simulation of asset price paths under Geometric Brownian Motion
 - Vectorized implementation with NumPy for performance
 - Reproducible results through seeded random number generation
 - Parameter estimation (annualized drift and volatility) from historical prices
 - Historical data download via `yfinance`
-- Visualization of simulated paths and the terminal price distribution
-- Summary statistics: expected price, standard deviation, percentiles, and confidence intervals
+- Interactive visualization of simulated paths
+- Analytical validation of terminal mean, sample variance and 5%/50%/95% quantiles
+- Nested-sample convergence analysis and saved error charts
+- JSON reports containing historical snapshots and offline replay
 - Risk metrics: Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall)
 
 **Planned**
 
 - European option pricing via Monte Carlo, validated against the Black-Scholes closed-form solution
 - Variance reduction techniques (antithetic variates, control variates)
-- Convergence analysis (error versus number of simulations)
+- Terminal distribution histogram and confidence intervals
 - Multi-asset simulation with correlated returns (Cholesky decomposition)
-- Command-line interface and configuration files
+- Configuration files
 
 ---
 
@@ -130,7 +132,7 @@ where $s$ is the sample standard deviation. This is why convergence analysis and
 ## Project Structure
 
 ```
-monte-carlo-price-simulator/
+monte-carlo-gbm/
 ├── src/
 │   └── simulator/
 │       ├── __init__.py
@@ -138,17 +140,19 @@ monte-carlo-price-simulator/
 │       ├── estimation.py    # Drift and volatility estimation
 │       ├── gbm.py           # GBM path simulation
 │       ├── risk.py          # VaR, CVaR and summary statistics
-│       └── plotting.py      # Visualization utilities
-├── notebooks/               # Exploratory analysis and experiments
+│       ├── validation.py    # Lognormal benchmarks and convergence
+│       ├── report.py        # Historical snapshots, JSON reports and replay
+│       └── plotting.py      # Convergence figure
 ├── tests/                   # Unit tests
-├── main.py                  # Example entry point
+├── main.py                  # Simulation and replay CLI
 ├── requirements.txt
+├── requirements-dev.txt
+├── pytest.ini
 ├── .gitignore
-├── LICENSE
 └── README.md
 ```
 
-> The structure above reflects the intended organization and may evolve as the project grows.
+> Generated reports and figures go to `reports/` by default and are ignored by Git.
 
 ---
 
@@ -163,8 +167,8 @@ monte-carlo-price-simulator/
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/monte-carlo-price-simulator.git
-cd monte-carlo-price-simulator
+git clone https://github.com/s2ddv/monte-carlo-gbm.git
+cd monte-carlo-gbm
 
 # Create and activate a virtual environment
 python3 -m venv .venv
@@ -178,6 +182,107 @@ pip install -r requirements.txt
 ---
 
 ## Usage
+
+Run the application with its default ticker and simulation settings:
+
+```bash
+python main.py
+```
+
+To run without opening a chart, or to choose simulation parameters:
+
+```bash
+python main.py --ticker PETR4.SA --period 3y --horizon 1 --steps 252 --n-sims 1000 --confidence 0.95 --no-plot
+```
+
+Use `python main.py --help` for all options. A new simulation downloads historical
+prices and requires network access. `--no-plot` suppresses the interactive path
+window; it still saves the JSON report and convergence PNG.
+
+### Reproducible reports
+
+```bash
+python main.py --ticker PETR4.SA --period 3y --horizon 1 --steps 252 --n-sims 10000 --seed 42 --no-plot --report reports/petr4.json
+python main.py --replay reports/petr4.json --no-plot --report reports/petr4-replay.json
+```
+
+The first command writes `reports/petr4.json` and
+`reports/petr4-convergence.png`. The second uses the saved historical observations
+and simulation configuration, without downloading data. In replay mode, ticker,
+period, horizon, steps, simulations, confidence and seed come from the report;
+any corresponding CLI flags are ignored. Use a different output path to retain
+the original report.
+
+The JSON records:
+
+- Ticker, requested historical period, source, daily adjusted-close convention,
+  retrieval timestamp (with timezone), first/last observation dates and count.
+- Every historical close and its date, plus a SHA-256 checksum of that snapshot.
+- Last observed price, estimated annual drift and volatility, 252 trading days
+  per year and the standard-deviation convention used in calibration.
+- Horizon in years, steps, simulation count, seed and risk confidence level.
+- Simulated and theoretical mean, variance and quantiles, with absolute and
+  relative errors, risk metrics and every convergence checkpoint.
+- Python and relevant package versions, RNG and numerical conventions.
+
+The snapshot preserves the inputs even when the provider revises adjusted
+prices. Replay recalibrates parameters and recomputes results from those inputs.
+Identical numerical results require the same code and numerical environment;
+a seed alone does not guarantee equality across NumPy versions. The report
+records versions but does not install or pin them. The checksum detects changes
+to the stored observations; it does not authenticate the provider.
+
+### Analytical validation and convergence
+
+For fixed calibrated parameters, the terminal law is
+`log(S_T) ~ Normal(log(S_0) + (mu - sigma²/2) T, sigma² T)`. Thus:
+
+- Mean: `S_0 exp(mu T)`.
+- Variance: `S_0² exp(2 mu T) expm1(sigma² T)`.
+- Quantile at probability `p`: `S_0 exp((mu - sigma²/2) T + sigma sqrt(T) Phi⁻¹(p))`.
+
+These are the [lognormal formulas documented by NIST](https://www.itl.nist.gov/div898/handbook/eda/section3/eda3669.htm),
+parameterized for GBM. `mu` is the price drift, not the mean log return.
+`expm1` improves precision for small volatility. The zero-volatility case is a
+point mass and is handled directly. Empirical variance uses `ddof=1` (unbiased);
+quantiles use NumPy's linear interpolation at 5%, 50% and 95%. Quantiles describe
+the terminal distribution, not confidence intervals for an estimator.
+
+Absolute error is `abs(estimate - theory)`; relative error divides that by
+`abs(theory)`. Undefined values are JSON `null`: sample variance at `N=1`, and
+relative error when the theoretical reference is zero. A single simulation is
+supported but cannot demonstrate convergence.
+
+Up to 12 geometrically spaced checkpoints reuse increasing prefixes of the
+**same terminal sample**, always including the full sample. The three-panel PNG
+shows absolute errors for mean, variance and quantiles. Its mean panel also
+shows `sqrt(Var(S_T)/N)`, the exact standard error (and RMSE) of the sample mean
+under fixed GBM parameters. This reference decays as `N^(-1/2)`; one observed
+error curve need not decrease monotonically. Checkpoints are correlated because
+the samples are nested; they are not independent replications or an empirical
+RMSE study. The plot uses a logarithmic N axis and linear error axes so zero
+errors remain visible. Variance errors have squared-price units.
+
+The simulator uses exact GBM increments, so this measures Monte Carlo sampling
+error, not time-discretization error. Calibration uncertainty and model mismatch
+are not included. Holding the seed fixed while changing the array shape
+(`steps` or `n_sims`) changes which random draws belong to each path; separate
+runs should not be interpreted as nested samples.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_risk.py' -v
+```
+
+The pytest suite runs offline using dated synthetic historical inputs. It checks
+analytical formulas against SciPy's lognormal distribution, explicit sample
+statistics, nested convergence, fixed-seed simulation, degenerate cases,
+calibration, report fields, JSON round trips, snapshot integrity and offline
+CLI replay. Provider availability and interactive desktop windows are separate
+integration checks, not proven by these tests.
 
 The snippet below illustrates the core simulation logic: 1,000 one-year paths with 252 daily steps.
 
@@ -208,7 +313,7 @@ Calibrating the model with real market data:
 import numpy as np
 import yfinance as yf
 
-prices = yf.download("PETR4.SA", period="3y")["Close"].squeeze()
+prices = yf.download("PETR4.SA", period="3y", auto_adjust=True)["Close"].squeeze()
 log_returns = np.log(prices / prices.shift(1)).dropna()
 
 sigma = log_returns.std() * np.sqrt(252)
@@ -222,7 +327,7 @@ mu = log_returns.mean() * 252 + 0.5 * sigma**2
 1. **Data collection:** download adjusted historical prices for the chosen asset.
 2. **Calibration:** compute log returns and estimate annualized drift and volatility.
 3. **Simulation:** generate `N` price paths over the chosen horizon using the exact GBM discretization.
-4. **Analysis:** compute the distribution of terminal prices, confidence intervals, VaR, and CVaR.
+4. **Analysis:** compute terminal moments and quantiles, VaR and CVaR; save a reproducible report.
 5. **Validation:** compare Monte Carlo estimates against analytical results (for example, the known mean of a log-normal distribution) and check convergence as `N` increases.
 
 ---
@@ -230,12 +335,15 @@ mu = log_returns.mean() * 252 + 0.5 * sigma**2
 ## Roadmap
 
 - [x] Project setup and repository structure
-- [ ] GBM path simulator (vectorized)
-- [ ] Historical data download and parameter estimation
-- [ ] Visualization of paths and terminal distribution
-- [ ] VaR and CVaR computation
-- [ ] Unit tests and validation against analytical results
-- [ ] Convergence analysis
+- [x] GBM path simulator (vectorized)
+- [x] Historical data download and parameter estimation
+- [x] Visualization of paths
+- [ ] Terminal distribution histogram and confidence intervals
+- [x] VaR and CVaR computation
+- [x] Unit tests and validation against analytical results
+- [x] Command-line arguments for the simulation
+- [x] Convergence analysis with saved error charts
+- [x] Reproducible JSON reports and offline replay
 - [ ] European option pricing and comparison with Black-Scholes
 - [ ] Variance reduction (antithetic and control variates)
 - [ ] Correlated multi-asset simulation
