@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from simulator.data import download_prices
 from simulator.fundamentals import download_company, format_company, normalize_ticker
-from simulator.plotting import plot_convergence
+from simulator.plotting import (plot_convergence, plot_final_distribution,
+                                plot_paths)
 from simulator.report import (SimulationConfig, historical_snapshot, read_report,
                               run_simulation, write_report)
 
@@ -123,7 +124,9 @@ def main(argv: list[str] | None = None) -> None:
     mu, sigma = report["parameters"]["mu"], report["parameters"]["sigma"]
     print(f"Último preço: {s0:.2f}")
     print(f"mu = {mu:.2%} | sigma = {sigma:.2%}")
-    print(report["results"]["risk"])
+    # run_simulation computes risk_summary using the configured confidence.
+    risk = report["results"]["risk"]
+    print(risk)
     print(f"Preço esperado teórico ({config.horizon:g} ano(s)): "
           f"{report['results']['terminal']['mean']['theoretical']:.2f}")
     print("Média dos preços finais: ", paths[-1].mean())
@@ -135,17 +138,32 @@ def main(argv: list[str] | None = None) -> None:
     plot_convergence(report["convergence"], chart_path)
     print(f"Relatório: {args.report}\nConvergência: {chart_path}")
 
-    if not args.no_plot:
-        import matplotlib.pyplot as plt
+    if args.no_plot:
+        import matplotlib
 
-        import numpy as np
+        matplotlib.use("Agg")
 
-        plt.plot(np.linspace(0, config.horizon, config.steps + 1),
-                 paths[:, :50], alpha=0.5)
-        plt.title(f"Monte Carlo: {snapshot['ticker']}")
-        plt.xlabel("Anos")
-        plt.ylabel("Preço")
-        plt.show()
+    import matplotlib.pyplot as plt
+
+    paths_file = Path("docs") / f"{args.report.stem}-paths.png"
+    distribution_file = Path("docs") / f"{args.report.stem}-final-distribution.png"
+    paths_figure = plot_paths(
+        paths, title=f"GBM price paths: {snapshot['ticker']}",
+        save_path=paths_file,
+    )
+    distribution_figure = plot_final_distribution(
+        paths, var=risk["var"],
+        title=(f"Final prices: {snapshot['ticker']} "
+               f"(VaR confidence: {config.confidence:.1%})"),
+        save_path=distribution_file,
+    )
+    print(f"Price paths: {paths_file}\nFinal distribution: {distribution_file}")
+    try:
+        if not args.no_plot:
+            plt.show()
+    finally:
+        plt.close(paths_figure)
+        plt.close(distribution_figure)
 
 
 if __name__ == "__main__":

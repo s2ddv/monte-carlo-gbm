@@ -16,6 +16,11 @@ from simulator.report import (SimulationConfig, historical_snapshot,
 
 
 @pytest.fixture
+def isolated_output_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture
 def snapshot():
     prices = pd.Series(100 * np.exp([0, 0.01, -0.01, 0.02]),
                        index=pd.date_range("2026-01-05", periods=4, freq="B"))
@@ -58,7 +63,8 @@ def test_report_records_inputs_calibration_results_and_replays(snapshot, tmp_pat
 
 
 @pytest.mark.parametrize("with_company", [False, True])
-def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_company):
+def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_company,
+                                  isolated_output_directory):
     report, _ = run_simulation(snapshot, SimulationConfig(steps=2, n_sims=20))
     if with_company:
         report["company_analysis"] = company_snapshot(
@@ -76,6 +82,8 @@ def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_compan
     app.main(["--replay", str(source), "--report", str(destination), "--no-plot"])
     assert source.read_bytes() == destination.read_bytes()
     assert destination.with_name("replay-convergence.png").read_bytes().startswith(b"\x89PNG")
+    for name in ("replay-paths.png", "replay-final-distribution.png"):
+        assert (tmp_path / "docs" / name).read_bytes().startswith(b"\x89PNG")
 
 
 @pytest.mark.parametrize("change", ["price", "date", "metadata"])

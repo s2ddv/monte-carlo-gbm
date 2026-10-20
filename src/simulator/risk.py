@@ -4,19 +4,26 @@ import numpy as np
 
 
 def risk_summary(paths: np.ndarray, confidence: float = 0.95) -> dict[str, float]:
-    """Summarize paths shaped (steps + 1, n_sims), including initial prices.
+    """Summarize terminal prices and losses relative to the initial price.
 
-    Loss is initial minus terminal price, in price units: negative means a
-    gain. VaR is the loss percentile at ``confidence``; CVaR is the mean of
-    losses strictly above VaR. If that tail is empty (e.g. identical outcomes),
-    CVaR equals VaR. Neither metric is clipped at zero.
+    Loss is initial minus terminal price: negative means a gain. CVaR is
+    the mean of losses greater than or equal to VaR; neither is clipped.
 
-    The expected price estimates s0 * exp(mu * horizon), subject to sampling
-    error. Drift and horizon cannot be inferred from paths alone.
+    Args:
+        paths: Finite prices shaped (steps + 1, n_sims), with a common s0.
+        confidence: Loss percentile level, strictly between 0 and 1.
+
+    Returns:
+        Expected terminal price, probability of loss, VaR and CVaR.
+
+    Raises:
+        ValueError: If paths or confidence are invalid.
     """
     paths = np.asarray(paths, dtype=float)
     if paths.ndim != 2 or paths.shape[0] < 2 or paths.shape[1] == 0:
-        raise ValueError("paths must contain an initial row and terminal prices.")
+        raise ValueError(
+            "paths must be 2D with at least 2 rows and 1 simulation."
+        )
     if not np.isfinite(paths).all():
         raise ValueError("paths must contain only finite prices.")
     if not 0 < confidence < 1:
@@ -29,15 +36,12 @@ def risk_summary(paths: np.ndarray, confidence: float = 0.95) -> dict[str, float
     final_prices = paths[-1]
     losses = s0 - final_prices
     var = float(np.percentile(losses, confidence * 100))
-    tail_losses = losses[losses > var]
-    cvar = float(tail_losses.mean()) if tail_losses.size else var
+    tail_losses = losses[losses >= var]
+    cvar = float(tail_losses.mean())
 
-    summary = {
+    return {
         "expected_price": float(final_prices.mean()),
         "prob_loss": float(np.mean(final_prices < s0)),
         "var": var,
         "cvar": cvar,
     }
-    assert summary["cvar"] >= summary["var"]
-    assert 0 <= summary["prob_loss"] <= 1
-    return summary

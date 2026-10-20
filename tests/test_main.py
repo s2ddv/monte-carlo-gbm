@@ -8,7 +8,8 @@ from simulator.fundamentals import company_snapshot
 
 
 @pytest.fixture(autouse=True)
-def offline_company(monkeypatch):
+def offline_company(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(app, "download_company", lambda ticker: company_snapshot(
         ticker, {"longName": "Test Company", "currency": "USD", "financialCurrency": "USD",
                  "totalRevenue": 123456789, "trailingPE": 15, "profitMargins": 0.125},
@@ -47,6 +48,8 @@ def test_main_runs_with_arguments_without_plot_or_network(monkeypatch, capsys, t
     assert "Preço esperado teórico (0.5 ano(s))" in output
     assert (tmp_path / "run.json").is_file()
     assert (tmp_path / "run-convergence.png").read_bytes().startswith(b"\x89PNG")
+    for name in ("run-paths.png", "run-final-distribution.png"):
+        assert (tmp_path / "docs" / name).read_bytes().startswith(b"\x89PNG")
     assert "Test Company (TEST)" in output
     assert "P/L (TTM): 15.00x" in output
     assert "Receita (revenue, TTM): USD 123,456,789.00" in output

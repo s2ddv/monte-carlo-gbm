@@ -17,11 +17,17 @@ class RiskSummaryTests(unittest.TestCase):
         self.assertAlmostEqual(summary["var"], 18)
         self.assertEqual(summary["cvar"], 20)
 
-    def test_custom_confidence_excludes_losses_equal_to_var(self):
+    def test_custom_confidence_includes_losses_equal_to_var(self):
         paths = np.array([[100] * 5, [80, 90, 100, 110, 120]])
         summary = risk_summary(paths, confidence=0.5)
         self.assertEqual(summary["var"], 0)
-        self.assertEqual(summary["cvar"], 15)
+        self.assertEqual(summary["cvar"], 10)
+
+    def test_cvar_includes_all_ties_at_var(self) -> None:
+        paths = np.array([[100] * 5, [80, 90, 90, 90, 110]])
+        summary = risk_summary(paths, confidence=0.5)
+        self.assertEqual(summary["var"], 10)
+        self.assertEqual(summary["cvar"], 12.5)
 
     def test_negative_var_is_preserved(self):
         summary = risk_summary([[100] * 5, [110, 120, 130, 140, 150]])
@@ -29,7 +35,7 @@ class RiskSummaryTests(unittest.TestCase):
         self.assertEqual(summary["cvar"], -10)
         self.assertEqual(summary["prob_loss"], 0)
 
-    def test_empty_tail_and_single_simulation(self):
+    def test_identical_outcomes_and_single_simulation(self):
         for final_price in (90, 100, 110):
             for n_sims in (1, 1000):
                 with self.subTest(final_price=final_price, n_sims=n_sims):

@@ -47,7 +47,7 @@ This project aims to:
 - Reproducible results through seeded random number generation
 - Parameter estimation (annualized drift and volatility) from historical prices
 - Historical data download via `yfinance`
-- Interactive visualization of simulated paths
+- Saved path fan charts and terminal-price histograms, with optional display
 - Analytical validation of terminal mean, sample variance and 5%/50%/95% quantiles
 - Nested-sample convergence analysis and saved error charts
 - JSON reports containing historical snapshots and offline replay
@@ -57,7 +57,7 @@ This project aims to:
 
 - European option pricing via Monte Carlo, validated against the Black-Scholes closed-form solution
 - Variance reduction techniques (antithetic variates, control variates)
-- Terminal distribution histogram and confidence intervals
+- Confidence intervals
 - Multi-asset simulation with correlated returns (Cholesky decomposition)
 - Configuration files
 
@@ -125,7 +125,7 @@ where $s$ is the sample standard deviation. This is why convergence analysis and
 ### Risk Metrics
 
 - **Value at Risk (VaR)** at confidence level $\alpha$: the loss threshold that is not exceeded with probability $\alpha$ over the chosen horizon, estimated as the corresponding percentile of the simulated loss distribution.
-- **Conditional Value at Risk (CVaR)**: the expected loss given that the loss exceeds the VaR threshold. It captures tail risk beyond VaR.
+- **Conditional Value at Risk (CVaR)**: the mean simulated loss greater than or equal to the VaR threshold, including all ties at VaR.
 
 ---
 
@@ -143,7 +143,8 @@ monte-carlo-gbm/
 │       ├── risk.py          # VaR, CVaR and summary statistics
 │       ├── validation.py    # Lognormal benchmarks and convergence
 │       ├── report.py        # Historical snapshots, JSON reports and replay
-│       └── plotting.py      # Convergence figure
+│       └── plotting.py      # Paths, terminal distribution and convergence
+├── docs/                    # Saved price charts and synthetic examples
 ├── tests/                   # Unit tests
 ├── main.py                  # Simulation and replay CLI
 ├── requirements.txt
@@ -153,7 +154,8 @@ monte-carlo-gbm/
 └── README.md
 ```
 
-> Generated reports and figures go to `reports/` by default and are ignored by Git.
+> JSON reports and convergence figures go to `reports/` by default and are
+> ignored by Git. Path charts and terminal-price histograms are saved to `docs/`.
 
 ---
 
@@ -204,8 +206,48 @@ python main.py --ticker PETR4.SA --period 3y --horizon 1 --steps 252 --n-sims 10
 Use `python main.py --help` for all options. A new simulation downloads historical
 prices and company fundamentals and requires network access. `--ticker` skips
 the prompt, including for scripts and CI. If stdin ends before a ticker is
-provided, the CLI explains how to use `--ticker` and exits. `--no-plot` suppresses the interactive path
-window; it still saves the JSON report and convergence PNG.
+provided, the CLI explains how to use `--ticker` and exits. `--no-plot` suppresses
+interactive windows; it still saves the JSON report and all three PNG figures.
+The new charts are `docs/<report-stem>-paths.png` and
+`docs/<report-stem>-final-distribution.png`, relative to the working directory.
+Repeated runs with the same report stem overwrite those charts.
+
+### Price charts
+
+`plot_paths` displays the first 50 paths by default, including the initial row.
+Its horizontal axis is the simulation step, since the path matrix does not
+contain the horizon. `plot_final_distribution` uses every terminal price and
+marks the initial price, mean and optional price at VaR (`s0 - var`).
+Both functions return a Matplotlib figure, accept an optional title and save
+path, and leave display and closing to the caller.
+
+These examples use synthetic parameters, not downloaded market data:
+`s0=100`, `mu=0.08`, `sigma=0.20`, one year, 252 steps, 10,000 simulations,
+seed 42 and 95% VaR confidence. Reproduce them offline from the repository root:
+
+```bash
+PYTHONPATH=src MPLBACKEND=Agg python - <<'PY'
+import matplotlib.pyplot as plt
+from simulator.gbm import simulate_gbm
+from simulator.plotting import plot_final_distribution, plot_paths
+from simulator.risk import risk_summary
+
+paths = simulate_gbm(100, 0.08, 0.20, 1, 252, 10_000, seed=42)
+risk = risk_summary(paths, confidence=0.95)
+fan = plot_paths(paths, title="Synthetic GBM: first 50 of 10,000 paths",
+                 save_path="docs/example-paths.png")
+histogram = plot_final_distribution(
+    paths, var=risk["var"], title="Synthetic GBM: final prices (95% VaR)",
+    save_path="docs/example-final-distribution.png",
+)
+plt.close(fan)
+plt.close(histogram)
+PY
+```
+
+![Synthetic GBM path fan chart](docs/example-paths.png)
+
+![Synthetic GBM final price distribution](docs/example-final-distribution.png)
 
 ### Company analysis
 
@@ -398,7 +440,8 @@ mu = log_returns.mean() * 252 + 0.5 * sigma**2
 - [x] GBM path simulator (vectorized)
 - [x] Historical data download and parameter estimation
 - [x] Visualization of paths
-- [ ] Terminal distribution histogram and confidence intervals
+- [x] Terminal distribution histogram with initial, mean and VaR price lines
+- [ ] Confidence intervals
 - [x] VaR and CVaR computation
 - [x] Unit tests and validation against analytical results
 - [x] Command-line arguments for the simulation
