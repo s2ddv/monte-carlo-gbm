@@ -46,10 +46,10 @@ def test_main_runs_with_arguments_without_plot_or_network(monkeypatch, capsys, t
     assert "'var':" in output
     assert "'cvar':" in output
     assert "Preço esperado teórico (0.5 ano(s))" in output
-    assert (tmp_path / "run.json").is_file()
-    assert (tmp_path / "run-convergence.png").read_bytes().startswith(b"\x89PNG")
-    for name in ("run-paths.png", "run-final-distribution.png"):
-        assert (tmp_path / "docs" / name).read_bytes().startswith(b"\x89PNG")
+    assert (tmp_path / "run" / "report.json").is_file()
+    assert (tmp_path / "run" / "convergence.png").read_bytes().startswith(b"\x89PNG")
+    for name in ("paths.png", "final-distribution.png"):
+        assert (tmp_path / "run" / name).read_bytes().startswith(b"\x89PNG")
     assert "Test Company (TEST)" in output
     assert "P/L (TTM): 15.00x" in output
     assert "Receita (revenue, TTM): USD 123,456,789.00" in output

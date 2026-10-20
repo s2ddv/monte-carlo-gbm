@@ -3,6 +3,8 @@
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
+import tempfile
 import sys
 
 # Allow `python main.py` from the repository without installing the package.
@@ -105,8 +107,8 @@ def main(argv: list[str] | None = None) -> None:
         print(format_company(company))
         try:
             prices = download_prices(args.ticker, period=args.period)
-        except Exception:
-            parser.exit(1, f"Não foi possível obter preços de {args.ticker}. "
+        except Exception as exc:
+            parser.exit(1, f"Não foi possível obter preços de {args.ticker}: {exc}. "
                         "Confira o ticker, o período e a conexão e tente novamente.\n")
         snapshot = historical_snapshot(prices, ticker=args.ticker, period=args.period,
                                        retrieved_at=datetime.now(timezone.utc).isoformat())
@@ -133,37 +135,50 @@ def main(argv: list[str] | None = None) -> None:
     print("Desvio padrão dos preços finais: ", paths[-1].std())
     print("Validação analítica (estimativa, teoria e erros):")
     print(report["results"]["terminal"])
-    write_report(report, args.report)
-    chart_path = args.report.with_name(args.report.stem + "-convergence.png")
-    plot_convergence(report["convergence"], chart_path)
-    print(f"Relatório: {args.report}\nConvergência: {chart_path}")
-
-    if args.no_plot:
-        import matplotlib
-
-        matplotlib.use("Agg")
-
-    import matplotlib.pyplot as plt
-
-    paths_file = Path("docs") / f"{args.report.stem}-paths.png"
-    distribution_file = Path("docs") / f"{args.report.stem}-final-distribution.png"
-    paths_figure = plot_paths(
-        paths, title=f"GBM price paths: {snapshot['ticker']}",
-        save_path=paths_file,
-    )
-    distribution_figure = plot_final_distribution(
-        paths, var=risk["var"],
-        title=(f"Final prices: {snapshot['ticker']} "
-               f"(VaR confidence: {config.confidence:.1%})"),
-        save_path=distribution_file,
-    )
-    print(f"Price paths: {paths_file}\nFinal distribution: {distribution_file}")
+    # --report names a run; all artifacts live in its sibling directory.
+    destination = args.report.with_suffix("")
+    if destination.exists() or args.report.exists():
+        raise FileExistsError(f"Execution already exists: {destination} or {args.report}. Choose another --report name.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    figures = []
+    plt = None
+    published = False
     try:
-        if not args.no_plot:
-            plt.show()
+        if args.no_plot:
+            import matplotlib
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        convergence = staging / "convergence.png"
+        figures.append(plot_convergence(report["convergence"], convergence))
+        paths_file = staging / "paths.png"
+        figures.append(plot_paths(paths, title=f"GBM price paths: {snapshot['ticker']}",
+                                  save_path=paths_file))
+        distribution = staging / "final-distribution.png"
+        figures.append(plot_final_distribution(
+            paths, var=risk["var"],
+            title=f"Final prices: {snapshot['ticker']} (VaR confidence: {config.confidence:.1%})",
+            save_path=distribution))
+        write_report(report, staging / "report.json")
+        # Rename the complete bundle only after every artifact is written.
+        if destination.exists():
+            raise FileExistsError(f"Execution already exists: {destination}.")
+        staging.rename(destination)
+        published = True
+    except Exception:
+        shutil.rmtree(staging)
+        raise
     finally:
-        plt.close(paths_figure)
-        plt.close(distribution_figure)
+        if plt is not None:
+            try:
+                if published and not args.no_plot:
+                    plt.show()
+            finally:
+                for figure in figures:
+                    plt.close(figure)
+    print(f"Relatório: {destination / 'report.json'}")
+    for name in ("convergence.png", "paths.png", "final-distribution.png"):
+        print(f"Figura: {destination / name}")
 
 
 if __name__ == "__main__":

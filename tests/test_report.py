@@ -70,7 +70,7 @@ def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_compan
         report["company_analysis"] = company_snapshot(
             "SYNTHETIC", {"totalRevenue": 12345}, retrieved_at="2026-01-09T12:00:00Z")
     source = tmp_path / "source.json"
-    destination = tmp_path / "replay.json"
+    destination = tmp_path / "replay" / "report.json"
     write_report(report, source)
 
     def forbidden_download(*args, **kwargs):
@@ -79,11 +79,11 @@ def test_cli_replay_never_downloads(snapshot, tmp_path, monkeypatch, with_compan
     monkeypatch.setattr(app, "download_prices", forbidden_download)
     monkeypatch.setattr(app, "download_company", forbidden_download)
     monkeypatch.setattr("builtins.input", forbidden_download)
-    app.main(["--replay", str(source), "--report", str(destination), "--no-plot"])
+    app.main(["--replay", str(source), "--report", str(tmp_path / "replay.json"), "--no-plot"])
     assert source.read_bytes() == destination.read_bytes()
-    assert destination.with_name("replay-convergence.png").read_bytes().startswith(b"\x89PNG")
-    for name in ("replay-paths.png", "replay-final-distribution.png"):
-        assert (tmp_path / "docs" / name).read_bytes().startswith(b"\x89PNG")
+    assert destination.with_name("convergence.png").read_bytes().startswith(b"\x89PNG")
+    for name in ("paths.png", "final-distribution.png"):
+        assert (tmp_path / "replay" / name).read_bytes().startswith(b"\x89PNG")
 
 
 @pytest.mark.parametrize("change", ["price", "date", "metadata"])

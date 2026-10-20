@@ -154,8 +154,9 @@ monte-carlo-gbm/
 └── README.md
 ```
 
-> JSON reports and convergence figures go to `reports/` by default and are
-> ignored by Git. Path charts and terminal-price histograms are saved to `docs/`.
+> A run named by `--report reports/simulation.json` writes four files under
+> `reports/simulation/`: `report.json`, `convergence.png`, `paths.png`, and
+> `final-distribution.png`. The `reports/` directory is ignored by Git.
 
 ---
 
@@ -208,9 +209,11 @@ prices and company fundamentals and requires network access. `--ticker` skips
 the prompt, including for scripts and CI. If stdin ends before a ticker is
 provided, the CLI explains how to use `--ticker` and exits. `--no-plot` suppresses
 interactive windows; it still saves the JSON report and all three PNG figures.
-The new charts are `docs/<report-stem>-paths.png` and
-`docs/<report-stem>-final-distribution.png`, relative to the working directory.
-Repeated runs with the same report stem overwrite those charts.
+The report name selects a sibling run directory (the `.json` suffix is removed).
+If either the requested JSON path or run directory already exists, the command
+fails and asks for another name. It never replaces an existing run. Files are
+prepared in a temporary sibling directory; a figure or JSON write failure
+removes that directory and leaves no apparently complete report.
 
 ### Price charts
 
@@ -295,15 +298,22 @@ actionable error.
 
 ```bash
 python main.py --ticker PETR4.SA --period 3y --horizon 1 --steps 252 --n-sims 10000 --seed 42 --no-plot --report reports/petr4.json
-python main.py --replay reports/petr4.json --no-plot --report reports/petr4-replay.json
+python main.py --replay reports/petr4/report.json --no-plot --report reports/petr4-replay.json
 ```
 
-The first command writes `reports/petr4.json` and
-`reports/petr4-convergence.png`. The second uses the saved historical observations
+The first command writes `reports/petr4/report.json` and three PNG files in
+`reports/petr4/`. The second uses the saved historical observations
 and simulation configuration, without downloading data. In replay mode, ticker,
 period, horizon, steps, simulations, confidence and seed come from the report;
 any corresponding CLI flags are ignored. Use a different output path to retain
 the original report.
+
+Price history comes from `yfinance.download` with `auto_adjust=True` and the
+single ticker's daily `Close` series. The provider response must have unique,
+ordered dates and at least three positive finite prices. Missing or ambiguous
+columns, invalid dates and invalid prices stop the run with a descriptive error.
+The snapshot records `source: yfinance`, `price_field: adjusted_close`, daily
+interval and the exact observations; replay uses these saved prices offline.
 
 The JSON records:
 
