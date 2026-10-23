@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 import main as app
-from simulator.fundamentals import company_snapshot
+from calibration.fundamentals import company_snapshot
 
 
 @pytest.fixture(autouse=True)

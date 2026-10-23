@@ -133,30 +133,23 @@ where $s$ is the sample standard deviation. This is why convergence analysis and
 
 ```
 monte-carlo-gbm/
-├── src/
-│   └── simulator/
-│       ├── __init__.py
-│       ├── data.py          # Historical data download and cleaning
-│       ├── fundamentals.py  # Company metrics, ticker input and terminal summary
-│       ├── estimation.py    # Drift and volatility estimation
-│       ├── gbm.py           # GBM path simulation
-│       ├── risk.py          # VaR, CVaR and summary statistics
-│       ├── validation.py    # Lognormal benchmarks and convergence
-│       ├── report.py        # Historical snapshots, JSON reports and replay
-│       └── plotting.py      # Paths, terminal distribution and convergence
-├── docs/                    # Saved price charts and synthetic examples
-├── tests/                   # Unit tests
+├── README.md
+├── pyproject.toml
 ├── main.py                  # Simulation and replay CLI
-├── requirements.txt
-├── requirements-dev.txt
-├── pytest.ini
-├── .gitignore
-└── README.md
+├── src/
+│   ├── simulation/          # GBM paths, plots and JSON reports
+│   ├── calibration/         # Historical prices, parameter estimates and fundamentals
+│   ├── risk/                # Terminal loss statistics
+│   └── validation/          # Analytical GBM benchmarks and convergence
+├── tests/                   # Offline tests, including test_gbm.py and test_statistics.py
+├── notebooks/research.ipynb # Empty research workspace
+├── research/report.md       # Research questions; no experimental results
+└── figures/                 # Existing synthetic example charts and future figures
 ```
 
-> A run named by `--report reports/simulation.json` writes four files under
-> `reports/simulation/`: `report.json`, `convergence.png`, `paths.png`, and
-> `final-distribution.png`. The `reports/` directory is ignored by Git.
+A run named by `--report reports/simulation.json` writes four files under
+`reports/simulation/`: `report.json`, `convergence.png`, `paths.png`, and
+`final-distribution.png`. The `reports/` directory is ignored by Git.
 
 ---
 
@@ -180,7 +173,7 @@ source .venv/bin/activate        # Linux / macOS
 # .venv\Scripts\activate         # Windows
 
 # Install dependencies
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ---
@@ -231,26 +224,26 @@ seed 42 and 95% VaR confidence. Reproduce them offline from the repository root:
 ```bash
 PYTHONPATH=src MPLBACKEND=Agg python - <<'PY'
 import matplotlib.pyplot as plt
-from simulator.gbm import simulate_gbm
-from simulator.plotting import plot_final_distribution, plot_paths
-from simulator.risk import risk_summary
+from simulation.gbm import simulate_gbm
+from simulation.plotting import plot_final_distribution, plot_paths
+from risk.statistics import risk_summary
 
 paths = simulate_gbm(100, 0.08, 0.20, 1, 252, 10_000, seed=42)
 risk = risk_summary(paths, confidence=0.95)
 fan = plot_paths(paths, title="Synthetic GBM: first 50 of 10,000 paths",
-                 save_path="docs/example-paths.png")
+                 save_path="figures/example-paths.png")
 histogram = plot_final_distribution(
     paths, var=risk["var"], title="Synthetic GBM: final prices (95% VaR)",
-    save_path="docs/example-final-distribution.png",
+    save_path="figures/example-final-distribution.png",
 )
 plt.close(fan)
 plt.close(histogram)
 PY
 ```
 
-![Synthetic GBM path fan chart](docs/example-paths.png)
+![Synthetic GBM path fan chart](figures/example-paths.png)
 
-![Synthetic GBM final price distribution](docs/example-final-distribution.png)
+![Synthetic GBM final price distribution](figures/example-final-distribution.png)
 
 ### Company analysis
 
@@ -381,9 +374,9 @@ runs should not be interpreted as nested samples.
 ### Tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 python -m pytest -q
-PYTHONPATH=src python -m unittest discover -s tests -p 'test_risk.py' -v
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_statistics.py' -v
 ```
 
 The pytest suite runs offline using dated synthetic historical inputs. It checks
@@ -495,4 +488,4 @@ This project is for **educational and research purposes only**. It does not cons
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+No license file is currently included in this repository.

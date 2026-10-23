@@ -4,8 +4,8 @@ import unittest
 
 import numpy as np
 
-from simulator.gbm import simulate_gbm
-from simulator.risk import risk_summary
+from simulation.gbm import simulate_gbm
+from risk.statistics import risk_summary
 
 
 class RiskSummaryTests(unittest.TestCase):

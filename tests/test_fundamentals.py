@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from simulator import fundamentals as company
+from calibration import fundamentals as company
 
 
 def snapshot(info):

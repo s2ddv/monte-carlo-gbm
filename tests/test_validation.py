@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from scipy.stats import lognorm
 
-from simulator.gbm import simulate_gbm
-from simulator.validation import (QUANTILES, compare_terminal,
+from simulation.gbm import simulate_gbm
+from validation.statistics import (QUANTILES, compare_terminal,
                                   convergence_analysis, terminal_theory)
 
 

@@ -10,10 +10,10 @@ import platform
 import numpy as np
 import pandas as pd
 
-from simulator.estimation import TRADING_DAYS, estimate_gbm_params
-from simulator.gbm import simulate_gbm
-from simulator.risk import risk_summary
-from simulator.validation import compare_terminal, convergence_analysis, terminal_theory
+from calibration.estimation import TRADING_DAYS, estimate_gbm_params
+from simulation.gbm import simulate_gbm
+from risk.statistics import risk_summary
+from validation.statistics import compare_terminal, convergence_analysis, terminal_theory
 
 
 @dataclass(frozen=True)

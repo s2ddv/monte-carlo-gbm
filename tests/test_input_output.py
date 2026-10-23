@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 
 import main as app
-from simulator.data import download_prices
-from simulator.report import historical_snapshot, SimulationConfig, run_simulation, write_report
+from calibration.data import download_prices
+from simulation.report import historical_snapshot, SimulationConfig, run_simulation, write_report
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def test_provider_single_adjusted_series(monkeypatch, dates):
         assert kwargs["group_by"] == "column"
         return pd.DataFrame({("Close", "AAPL"): [100., 101., 102.],
                              ("Open", "AAPL"): [99., 100., 101.]}, index=dates)
-    monkeypatch.setattr("simulator.data.yf.download", fake)
+    monkeypatch.setattr("calibration.data.yf.download", fake)
     prices = download_prices("AAPL")
     assert prices.tolist() == [100., 101., 102.]
     snapshot = historical_snapshot(prices, ticker="AAPL", period="3y",
@@ -37,7 +37,7 @@ def test_provider_single_adjusted_series(monkeypatch, dates):
     (pd.DataFrame({"Close": [1., float("nan"), 3.]}, index=pd.date_range("2026-01-01", periods=3)), "finite"),
 ])
 def test_provider_rejects_invalid_response(monkeypatch, frame, message):
-    monkeypatch.setattr("simulator.data.yf.download", lambda *a, **kw: frame)
+    monkeypatch.setattr("calibration.data.yf.download", lambda *a, **kw: frame)
     with pytest.raises(ValueError, match=message):
         download_prices("AAPL")
 
@@ -45,7 +45,7 @@ def test_provider_rejects_invalid_response(monkeypatch, frame, message):
 def test_provider_rejects_multiple_tickers(monkeypatch, dates):
     frame = pd.DataFrame({("Close", "AAPL"): [1., 2., 3.],
                           ("Close", "MSFT"): [1., 2., 3.]}, index=dates)
-    monkeypatch.setattr("simulator.data.yf.download", lambda *a, **kw: frame)
+    monkeypatch.setattr("calibration.data.yf.download", lambda *a, **kw: frame)
     with pytest.raises(ValueError, match="one adjusted Close"):
         download_prices("AAPL")
 

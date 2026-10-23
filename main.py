@@ -10,11 +10,11 @@ import sys
 # Allow `python main.py` from the repository without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from simulator.data import download_prices
-from simulator.fundamentals import download_company, format_company, normalize_ticker
-from simulator.plotting import (plot_convergence, plot_final_distribution,
+from calibration.data import download_prices
+from calibration.fundamentals import download_company, format_company, normalize_ticker
+from simulation.plotting import (plot_convergence, plot_final_distribution,
                                 plot_paths)
-from simulator.report import (SimulationConfig, historical_snapshot, read_report,
+from simulation.report import (SimulationConfig, historical_snapshot, read_report,
                               run_simulation, write_report)
 
 

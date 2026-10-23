@@ -8,9 +8,9 @@ import pandas as pd
 import pytest
 
 import main as app
-from simulator.plotting import plot_convergence
-from simulator.fundamentals import company_snapshot
-from simulator.report import (SimulationConfig, historical_snapshot,
+from simulation.plotting import plot_convergence
+from calibration.fundamentals import company_snapshot
+from simulation.report import (SimulationConfig, historical_snapshot,
                               prices_from_snapshot, read_replay,
                               run_simulation, write_report)
 
