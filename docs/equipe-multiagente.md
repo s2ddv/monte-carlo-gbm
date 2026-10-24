@@ -66,7 +66,19 @@ estava desabilitado. A configuração do projeto não força a troca de backend.
 
 O limite configurado é de dois subagentes; o principal é adicional. Os seis papéis
 ficam disponíveis para uso em etapas, sem exigir seis execuções simultâneas.
-Modelo e esforço de raciocínio são herdados, sem fixar um modelo indisponível.
+`backend_quant` e `revisor_quant` fixam GPT-6 Astra com esforço `high`; `pesquisador_quant`
+usa GPT-6.1 Sol com esforço `medium`. `frontend`, `testador_quant` e
+`corretor` continuam herdando o modelo e o esforço do principal enquanto decidimos
+suas configurações.
+
+| Especialista | Modelo | Esforço | Motivo |
+| --- | --- | --- | --- |
+| Pesquisador Quant | `gpt-6.1-sol` | `medium` | Pesquisa, hipóteses e derivação quantitativa |
+| Backend Quant | `gpt-6-astra` | `high` | Implementação numérica e preservação de precisão |
+| Revisor Quant | `gpt-6-astra` | `high` | Auditoria independente de matemática e conclusões |
+| Frontend | Herdado | Herdado | Definir depois conforme tipo e complexidade de interface |
+| Testador Quant | Herdado | Herdado | Definir se testes estatísticos/analíticos precisam de Astra |
+| Corretor | Herdado | Herdado | Definir entre modelo econômico padrão e escalação para bugs difíceis |
 
 O projeto usa descoberta nativa de TOMLs individuais, sem duplicar os papéis em
 declarações legadas `agents.<papel>`. Os campos efetivamente gravados são:
