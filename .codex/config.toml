@@ -1,0 +1,6 @@
+# Configuração local do projeto; Codex CLI 0.155.1.
+# Definições individuais: .codex/agents/*.toml (descoberta nativa).
+# Não altera modelo, permissões, rede ou aprovações herdadas.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
