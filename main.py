@@ -79,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="output JSON (default: reports/simulation.json)")
     parser.add_argument("--replay", type=Path,
                         help="replay a report offline; uses its data and simulation settings")
+    parser.add_argument("--out-of-sample", action="store_true",
+                        help="add fixed-calibration chronological historical diagnostics")
+    parser.add_argument("--calibration-observations", type=positive_int,
+                        help="number of initial closes used only for historical calibration")
+    parser.add_argument("--evaluation-horizon-days", type=positive_int, default=1,
+                        help="nonoverlapping historical horizon in trading observations (default: 1)")
+    parser.add_argument("--evaluation-confidence", type=confidence_level, default=0.95,
+                        help="historical VaR confidence (default: 0.95)")
     return parser
 
 
@@ -91,7 +99,28 @@ def main(argv: list[str] | None = None) -> None:
         snapshot = saved["historical_data"]
         config = SimulationConfig(**saved["simulation"])
         company = saved.get("company_analysis")
+        historical_config = None
+        if "out_of_sample" in saved:
+            protocol = saved["out_of_sample"]["protocol"]
+            historical_config = {
+                "calibration_observations": protocol["calibration_observations"],
+                "horizon_days": protocol["horizon_days"], "alpha": protocol["alpha"]}
+        if args.out_of_sample:
+            if args.calibration_observations is None:
+                parser.error("--out-of-sample requires --calibration-observations")
+            historical_config = {
+                "calibration_observations": args.calibration_observations,
+                "horizon_days": args.evaluation_horizon_days,
+                "alpha": args.evaluation_confidence}
     else:
+        if args.out_of_sample and args.calibration_observations is None:
+            parser.error("--out-of-sample requires --calibration-observations")
+        if not args.out_of_sample and args.calibration_observations is not None:
+            parser.error("--calibration-observations requires --out-of-sample")
+        historical_config = ({"calibration_observations": args.calibration_observations,
+                              "horizon_days": args.evaluation_horizon_days,
+                              "alpha": args.evaluation_confidence}
+                             if args.out_of_sample else None)
         if args.ticker is None:
             while True:
                 try:
@@ -114,7 +143,7 @@ def main(argv: list[str] | None = None) -> None:
                                        retrieved_at=datetime.now(timezone.utc).isoformat())
         config = SimulationConfig(args.horizon, args.steps, args.n_sims,
                                   args.seed, args.confidence)
-    report, paths = run_simulation(snapshot, config)
+    report, paths = run_simulation(snapshot, config, historical_config)
     if company is not None:
         report["company_analysis"] = company
         if args.replay:
@@ -135,6 +164,15 @@ def main(argv: list[str] | None = None) -> None:
     print("Desvio padrão dos preços finais: ", paths[-1].std())
     print("Validação analítica (estimativa, teoria e erros):")
     print(report["results"]["terminal"])
+    if "out_of_sample" in report:
+        evaluation = report["out_of_sample"]["evaluation"]
+        metrics = evaluation["metrics"]
+        print("Cobertura histórica observada (janelas sem sobreposição): "
+              f"{metrics['violation_count']}/{metrics['forecast_count']} violações; "
+              f"taxa observada {metrics['observed_violation_rate']:.2%}, "
+              f"referência nominal {metrics['nominal_violation_rate']:.2%}.")
+        for warning in evaluation["warnings"]:
+            print(f"Aviso: {warning}")
     # --report names a run; all artifacts live in its sibling directory.
     destination = args.report.with_suffix("")
     if destination.exists() or args.report.exists():

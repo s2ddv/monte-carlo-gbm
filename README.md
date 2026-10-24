@@ -50,6 +50,7 @@ This project aims to:
 - Saved path fan charts and terminal-price histograms, with optional display
 - Analytical validation of terminal mean, sample variance and 5%/50%/95% quantiles
 - Nested-sample convergence analysis and saved error charts
+- Optional chronological historical forecasts with frozen calibration and observed VaR coverage
 - JSON reports containing historical snapshots and offline replay
 - Risk metrics: Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall)
 
@@ -370,6 +371,49 @@ error, not time-discretization error. Calibration uncertainty and model mismatch
 are not included. Holding the seed fixed while changing the array shape
 (`steps` or `n_sims`) changes which random draws belong to each path; separate
 runs should not be interpreted as nested samples.
+
+### Chronological historical validation
+
+Enable this separate diagnostic explicitly:
+
+```bash
+python main.py --ticker PETR4.SA --period 3y --out-of-sample --calibration-observations 504 --evaluation-horizon-days 21 --evaluation-confidence 0.95 --no-plot --report reports/petr4-oos.json
+python main.py --replay reports/petr4-oos/report.json --no-plot --report reports/petr4-oos-replay.json
+```
+
+The first `n` adjusted closes calibrate `mu` and `sigma` **once** using 252 trading
+observations per year and the sample standard deviation of daily log returns
+(`ddof=1`). At least three calibration closes and one complete evaluation horizon
+are required. The first forecast begins at close `n-1`; later origins are
+`n-1+k*h`, each targeting a close `h` observations later. Thus scored intervals
+do not overlap. Remaining observations shorter than `h` are counted but not
+scored. An origin may use its own known price; no later price enters calibration.
+
+For each origin price `S`, horizon `T=h/252` years, and confidence `alpha`, the
+GBM predicts mean `S exp(mu*T)`, median `S exp((mu-sigma²/2)*T)`, and lower
+quantile `Q = S exp((mu-sigma²/2)*T + sigma*sqrt(T)*Phi⁻¹(1-alpha))`.
+Predicted `VaR_alpha = S-Q`; realized loss is `S-S_realized`. A violation occurs
+only when realized loss is **strictly greater** than VaR, equivalently
+`S_realized < Q`. The observed violation count and rate are shown beside the
+nominal reference `1-alpha`; these describe historical observed coverage, not
+future predictive validity or proof of risk calibration.
+
+The point forecast is the predicted mean. Each error is `S_realized-S_predicted`.
+Mean bias is the average signed error, MAE averages absolute errors, and RMSE is
+the square root of the average squared error. `mae_percent` averages
+`100*abs(error)/S_origin`. Prices, errors and VaR use the asset's price currency;
+`mae_percent` is a percentage. `mu` has units year⁻¹ and `sigma` year⁻¹ᐟ².
+
+The report saves each forecast, metrics, warnings for fewer than 30 complete
+windows, the calibration dates and daily-return statistics, and source, dates
+and SHA-256 of the historical snapshot. Replay recalculates the diagnostic
+offline from that snapshot; its checksum detects saved-data changes but cannot
+authenticate the provider. With zero volatility the predicted law is a point
+mass: strict model violation probability is zero, although `1-alpha` remains
+the displayed nominal reference. Historical drift and volatility are estimated
+with uncertainty; regimes can change. This diagnostic uses analytical forecasts,
+so it does not mix forecast error with Monte Carlo sampling error. It does not
+estimate parameter uncertainty or model error.
 
 ### Tests
 

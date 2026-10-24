@@ -14,6 +14,7 @@ from calibration.estimation import TRADING_DAYS, estimate_gbm_params
 from simulation.gbm import simulate_gbm
 from risk.statistics import risk_summary
 from validation.statistics import compare_terminal, convergence_analysis, terminal_theory
+from validation.out_of_sample import evaluate_out_of_sample
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ def prices_from_snapshot(snapshot):
     return prices
 
 
-def run_simulation(snapshot, config):
+def run_simulation(snapshot, config, out_of_sample_config=None):
     """Return a deterministic, JSON-safe report and its simulated paths."""
     prices = prices_from_snapshot(snapshot)
     mu, sigma = estimate_gbm_params(prices)
@@ -104,6 +105,15 @@ def run_simulation(snapshot, config):
                         **{name: version(name) for name in
                            ("numpy", "pandas", "matplotlib", "yfinance")}},
     }
+    if out_of_sample_config is not None:
+        if not isinstance(out_of_sample_config, dict):
+            raise ValueError("out_of_sample_config must be a mapping")
+        diagnostic = evaluate_out_of_sample(prices, **out_of_sample_config)
+        diagnostic["historical_snapshot"] = {
+            key: snapshot[key] for key in
+            ("source", "price_field", "retrieved_at", "first_date", "last_date", "sha256")
+        }
+        report["out_of_sample"] = diagnostic
     # Fail on nonfinite computations instead of writing nonstandard JSON.
     json.dumps(report, allow_nan=False)
     return report, paths
@@ -122,8 +132,20 @@ def read_report(path):
     if report["schema_version"] != 1 or report["model"] != "single_asset_gbm":
         raise ValueError("Unsupported report schema/model.")
     snapshot = report["historical_data"]
-    prices_from_snapshot(snapshot)
+    prices = prices_from_snapshot(snapshot)
     SimulationConfig(**report["simulation"])
+    if "out_of_sample" in report:
+        saved = report["out_of_sample"]
+        protocol = saved["protocol"]
+        expected = evaluate_out_of_sample(
+            prices, calibration_observations=protocol["calibration_observations"],
+            horizon_days=protocol["horizon_days"], alpha=protocol["alpha"])
+        expected["historical_snapshot"] = {
+            key: snapshot[key] for key in
+            ("source", "price_field", "retrieved_at", "first_date", "last_date", "sha256")
+        }
+        if saved != expected:
+            raise ValueError("Out-of-sample diagnostic mismatch.")
     return report
 
 
