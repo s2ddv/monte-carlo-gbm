@@ -53,6 +53,7 @@ This project aims to:
 - Optional chronological historical forecasts with frozen calibration and observed VaR coverage
 - JSON reports containing historical snapshots and offline replay
 - Risk metrics: Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall)
+- An abstract simulator interface and an optional Student t shock scenario through the Python API
 
 **Planned**
 
@@ -98,6 +99,34 @@ S_{t+\Delta t} = S_t \exp\left( \left(\mu - \frac{\sigma^2}{2}\right) \Delta t +
 $$
 
 Because this is the exact solution of the SDE, it introduces no discretization error, unlike the Euler-Maruyama scheme.
+
+`GbmSimulator` also offers `generate_paths("t_student")` after calibration.
+It fits Student t degrees of freedom to daily log returns and standardizes
+the sampled shocks to unit variance, requiring `df > 2`. This is a discrete
+heavy-tailed log-return scenario: it is not exact continuous-time GBM, and its
+distribution depends on the chosen number of steps. The existing CLI and
+analytic validation continue to use normal GBM. In the t scenario,
+exponentiating t shocks does not yield finite theoretical price moments, so
+the normal GBM analytical benchmarks do not apply. A larger simulated VaR is
+not guaranteed, nor does this model establish better predictive accuracy.
+
+The Python API uses `np.random.default_rng(seed)` (NumPy's default bit
+generator); calls advance the generator state. Identical seeds reproduce a
+run within the same NumPy version and sampling shape, but cross-version
+identity is not guaranteed. Calibration uses 252 trading days per year,
+sample standard deviation (`ddof=1`), and a SciPy t fit of standardized daily
+log returns. A constant log-return series has `sigma=0` and no identifiable
+t degrees of freedom: normal paths remain deterministic and t paths are
+rejected. A fit with `df <= 2` is retained for inspection but rejected for
+t generation because unit-variance scaling is undefined. The t fit estimates
+location and scale only as nuisance parameters; simulated shocks are centered
+at zero and use sample-moment `mu` and `sigma`.
+
+The full `float64` output occupies `8 × (steps + 1) × n_sims` bytes.
+`GbmSimulator` rejects requests above a 256 MiB estimated array budget before
+allocation. Normal generation writes shocks into the output; t generation
+temporarily needs another `8 × steps × n_sims` bytes for NumPy's t sample.
+This estimate excludes small library overhead and caller-held arrays.
 
 ### Parameter Estimation
 
