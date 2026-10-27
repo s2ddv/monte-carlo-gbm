@@ -12,7 +12,7 @@ import main as app
 from simulation.plotting import plot_convergence
 from calibration.fundamentals import company_snapshot
 from simulation.report import (SimulationConfig, historical_snapshot,
-                              prices_from_snapshot, read_replay,
+                              prices_from_snapshot, read_replay, read_report,
                               run_simulation, terminal_mean_confidence_interval,
                               write_report)
 
@@ -167,3 +167,34 @@ def test_terminal_mean_interval_avoids_intermediate_square_limits(scale):
 def test_large_constant_terminal_interval_is_representable():
     interval = terminal_mean_confidence_interval([1e308, 1e308])
     assert interval["lower"] == interval["upper"] == 1e308
+
+
+@pytest.mark.parametrize("section,key", [
+    ("results", "risk"), ("results", "terminal"),
+    ("parameters", "mu"), ("convergence", None),
+])
+def test_replay_rejects_changed_saved_results(snapshot, tmp_path, section, key):
+    report, _ = run_simulation(snapshot, SimulationConfig(steps=2, n_sims=20))
+    damaged = deepcopy(report)
+    if section == "convergence":
+        damaged[section][0]["mean"]["estimate"] += 1
+    elif key == "risk":
+        damaged[section][key]["var"] += 1
+    elif key == "terminal":
+        damaged[section][key]["mean"]["estimate"] += 1
+    else:
+        damaged[section][key] += 1
+    path = tmp_path / "damaged.json"
+    write_report(damaged, path)
+    with pytest.raises(ValueError, match="Replay result mismatch"):
+        read_report(path)
+
+
+@pytest.mark.parametrize("section", ["results", "parameters"])
+def test_replay_rejects_removed_calculated_fields(snapshot, tmp_path, section):
+    report, _ = run_simulation(snapshot, SimulationConfig(steps=2, n_sims=20))
+    report[section] = {}
+    path = tmp_path / "incomplete.json"
+    write_report(report, path)
+    with pytest.raises(ValueError, match="Replay result mismatch"):
+        read_report(path)

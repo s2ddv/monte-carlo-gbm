@@ -81,3 +81,18 @@ def test_report_write_failure_leaves_no_run(monkeypatch, tmp_path, dates):
         app.main(["--replay", str(source), "--no-plot", "--report", str(tmp_path / "run.json")])
     assert not (tmp_path / "run").exists()
     assert not list(tmp_path.glob(".run-*"))
+
+
+@pytest.mark.parametrize("collision", ["directory", "json"])
+def test_initial_collision_prevents_provider_and_simulation(monkeypatch, tmp_path, collision):
+    target = tmp_path / "run.json"
+    occupied = target.with_suffix("") if collision == "directory" else target
+    occupied.mkdir() if collision == "directory" else occupied.write_text("existing")
+    def forbidden(*args, **kwargs):
+        pytest.fail("collision must stop before provider or simulation")
+    monkeypatch.setattr(app, "download_company", forbidden)
+    monkeypatch.setattr(app, "download_prices", forbidden)
+    monkeypatch.setattr(app, "run_simulation", forbidden)
+    with pytest.raises(FileExistsError, match="Choose another"):
+        app.main(["--ticker", "AAPL", "--report", str(target), "--no-plot"])
+    assert not list(tmp_path.glob(".run-*"))

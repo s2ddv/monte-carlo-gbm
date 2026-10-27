@@ -163,19 +163,26 @@ def read_report(path):
         raise ValueError("Unsupported report schema/model.")
     snapshot = report["historical_data"]
     prices = prices_from_snapshot(snapshot)
-    SimulationConfig(**report["simulation"])
+    config = SimulationConfig(**report["simulation"])
+    historical_config = None
     if "out_of_sample" in report:
         saved = report["out_of_sample"]
         protocol = saved["protocol"]
-        expected = evaluate_out_of_sample(
-            prices, calibration_observations=protocol["calibration_observations"],
-            horizon_days=protocol["horizon_days"], alpha=protocol["alpha"])
-        expected["historical_snapshot"] = {
-            key: snapshot[key] for key in
-            ("source", "price_field", "retrieved_at", "first_date", "last_date", "sha256")
-        }
-        if saved != expected:
-            raise ValueError("Out-of-sample diagnostic mismatch.")
+        historical_config = {
+            "calibration_observations": protocol["calibration_observations"],
+            "horizon_days": protocol["horizon_days"], "alpha": protocol["alpha"]}
+    expected, _ = run_simulation(snapshot, config, historical_config)
+    for key in ("last_price", "parameters", "conventions", "results", "convergence"):
+        if key not in report or report[key] != expected[key]:
+            raise ValueError(f"Replay result mismatch in {key}: saved values differ from the reproduced run.")
+    if "out_of_sample" in report:
+        saved_diagnostic = report["out_of_sample"]
+        expected_diagnostic = expected["out_of_sample"]
+        # The Wilson interval was added after the original diagnostic schema.
+        if "violation_rate_interval" not in saved_diagnostic.get("evaluation", {}):
+            expected_diagnostic["evaluation"].pop("violation_rate_interval", None)
+        if saved_diagnostic != expected_diagnostic:
+            raise ValueError("Replay result mismatch in out_of_sample: saved values differ from the reproduced run.")
     return report
 
 

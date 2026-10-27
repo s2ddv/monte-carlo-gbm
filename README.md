@@ -365,12 +365,31 @@ provider. Its original retrieval time remains visible; these are historical
 snapshots, not refreshed quotes. Older reports without `company_analysis`
 continue to replay and explicitly state that no fundamentals were saved.
 
+Replay checks the historical snapshot, then recalibrates and reruns the saved
+GBM configuration and seed. Every saved calculated value (parameters, risk,
+terminal comparison, convergence and any historical diagnostic) must agree
+with that run; otherwise replay raises a descriptive error before writing a
+new report. Company metadata and recorded package versions remain historical
+metadata. Older reports without newer diagnostic fields remain readable. This
+consistency check does not authenticate the provider or report author.
+
 The snapshot preserves the inputs even when the provider revises adjusted
 prices. Replay recalibrates parameters and recomputes results from those inputs.
 Identical numerical results require the same code and numerical environment;
 a seed alone does not guarantee equality across NumPy versions. The report
 records versions but does not install or pin them. The checksum detects changes
 to the stored observations; it does not authenticate the provider.
+
+### Terminal-only Python API
+
+`simulation.gbm.simulate_terminal_batched(s0, mu, sigma, horizon, n_sims,
+seed=42, batch_size=10_000, max_working_bytes=268_435_456)` returns a
+one-dimensional float64 array of normal-GBM final prices using exact terminal
+sampling and batches. Its explicit memory cap covers the returned array and
+working samples, excluding Python and library overhead. The existing full-path
+matrix `(steps + 1, n_sims)` remains unchanged. The terminal API has a
+different random draw shape, so equal seeds do not imply element-wise equality
+with full paths. Cross-version equality is not guaranteed.
 
 ### Analytical validation and convergence
 
@@ -445,7 +464,12 @@ Predicted `VaR_alpha = S-Q`; realized loss is `S-S_realized`. A violation occurs
 only when realized loss is **strictly greater** than VaR, equivalently
 `S_realized < Q`. The observed violation count and rate are shown beside the
 nominal reference `1-alpha`; these describe historical observed coverage, not
-future predictive validity or proof of risk calibration.
+future predictive validity or proof of risk calibration. The number of complete
+forecasts and a 95% Wilson score interval quantify uncertainty in the observed
+violation rate. This binomial interval assumes comparable, approximately
+independent violations; small samples can give wide, unstable bounds. Its level
+is separate from the VaR confidence `alpha` and nominal rate `1-alpha`. It
+excludes GBM parameter uncertainty, regime changes and model error.
 
 The point forecast is the predicted mean. Each error is `S_realized-S_predicted`.
 Mean bias is the average signed error, MAE averages absolute errors, and RMSE is

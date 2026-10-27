@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from scipy.stats import norm
+from scipy.stats import binomtest, norm
 
 import main as app
 from calibration.fundamentals import company_snapshot
@@ -140,6 +140,34 @@ def test_no_violations_and_zero_volatility_are_json_finite():
     assert result["evaluation"]["metrics"]["violation_count"] == 0
     assert result["evaluation"]["metrics"]["observed_violation_rate"] == 0
     assert all(row["var_violation"] is False for row in result["evaluation"]["rows"])
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("violations,forecasts", [(0, 1), (1, 1), (0, 4), (3, 4),
+                                                   (4, 4), (5, 100), (50, 100)])
+def test_violation_rate_interval_matches_independent_wilson_reference(violations, forecasts):
+    # Flat training makes VaR zero. Each following decrease is a strict
+    # violation and each unchanged close is a nonviolation, giving exact k/n.
+    closes = [100.0] * 31
+    for i in range(forecasts):
+        closes.append(closes[-1] - 0.1 if i < violations else closes[-1])
+    prices = pd.Series(closes, index=pd.date_range("2025-01-02", periods=len(closes), freq="B"))
+    result = evaluate_out_of_sample(prices, calibration_observations=31, alpha=0.8)
+    evaluation = result["evaluation"]
+    interval = evaluation["violation_rate_interval"]
+    reference = binomtest(violations, forecasts).proportion_ci(confidence_level=0.95, method="wilson")
+    assert evaluation["metrics"]["forecast_count"] == forecasts
+    assert evaluation["metrics"]["violation_count"] == violations
+    assert interval["method"] == "wilson_score"
+    assert interval["confidence_level"] == 0.95
+    assert interval["lower"] == pytest.approx(reference.low, abs=1e-14)
+    assert interval["upper"] == pytest.approx(reference.high, abs=1e-14)
+    assert 0 <= interval["lower"] <= violations / forecasts <= interval["upper"] <= 1
+    assert interval["upper"] > interval["lower"]  # even k=0, k=n and n=1
+    assert "Independent Bernoulli" in interval["assumptions"]
+    assert "Small samples" in interval["limitations"]
+    assert "GBM parameters" in interval["limitations"]
+    assert evaluation["metrics"]["nominal_violation_rate"] == pytest.approx(0.2)
     json.dumps(result, allow_nan=False)
 
 

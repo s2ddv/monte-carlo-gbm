@@ -10,9 +10,43 @@ from calibration.estimation import TRADING_DAYS, estimate_gbm_params, log_return
 from calibration.prices import validate_prices
 
 
+def _violation_rate_interval(violations: int, forecasts: int) -> dict:
+    """Two-sided 95% Wilson score interval for a binomial proportion.
+
+    With p_hat=k/n, z=Phi^-1(0.975), d=1+z^2/n, the endpoints are
+    (p_hat+z^2/(2*n) +/- z*sqrt(p_hat*(1-p_hat)/n+z^2/(4*n^2)))/d.
+    Counts come from the nonempty forecast rows; bounds are dimensionless.
+    """
+    confidence_level = 0.95
+    z = NormalDist().inv_cdf((1 + confidence_level) / 2)
+    rate = violations / forecasts
+    denominator = 1 + z**2 / forecasts
+    center = (rate + z**2 / (2 * forecasts)) / denominator
+    half_width = (z * np.sqrt(rate * (1 - rate) / forecasts
+                             + z**2 / (4 * forecasts**2)) / denominator)
+    return {
+        "method": "wilson_score",
+        "confidence_level": confidence_level,
+        "lower": 0.0 if violations == 0 else float(max(0.0, center - half_width)),
+        "upper": 1.0 if violations == forecasts else float(min(1.0, center + half_width)),
+        "assumptions": "Independent Bernoulli violations with a constant probability, conditional on the fitted model.",
+        "limitations": (
+            "Small samples give wide intervals and approximate coverage; zero violations do not establish zero risk. "
+            "Nonoverlapping horizons do not guarantee independence in market data. "
+            "This estimates uncertainty in the observed violation rate, not the nominal rate 1-alpha "
+            "or uncertainty in GBM parameters or model specification."
+        ),
+    }
+
+
 def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
                            horizon_days: int = 1, alpha: float = 0.95) -> dict:
-    """Score disjoint historical horizons using one fit from the initial window."""
+    """Score disjoint historical horizons using one fit from the initial window.
+
+    ``alpha`` sets the VaR quantile. The observed violation-rate interval uses
+    a separate fixed 95% confidence level and a binomial Wilson approximation.
+    Forecast counts, rates and interval bounds are dimensionless.
+    """
     prices = validate_prices(prices, require_dates=True)
     values = prices.to_numpy()
     if type(calibration_observations) is not int or calibration_observations < 3:
@@ -94,7 +128,8 @@ def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
                        "horizon_trading_days": horizon_days,
                        "horizon_years": duration,
                        "unscored_tail_observations": (len(values) - calibration_observations) % horizon_days,
-                       "rows": rows, "metrics": metrics, "warnings": warnings},
+                       "rows": rows, "metrics": metrics, "warnings": warnings,
+                       "violation_rate_interval": _violation_rate_interval(violations, len(rows))},
         "protocol": {"calibration_observations": calibration_observations,
                      "horizon_days": horizon_days, "alpha": alpha,
                      "origin_policy": "last calibration close, then advance by horizon_days",

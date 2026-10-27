@@ -1,7 +1,7 @@
 """Normal GBM paths and a heavy-tailed log-return scenario."""
 
 from typing import Literal
-from numbers import Real
+from numbers import Integral, Real
 
 import numpy as np
 import pandas as pd
@@ -141,9 +141,91 @@ class GbmSimulator(BaseStochasticSimulator):
             raise ValueError("simulated prices exceed finite positive precision")
         return paths
 
+    def generate_terminal(self, *, batch_size: int = 10_000,
+                          max_working_bytes: int = 256 * 1024 * 1024) -> np.ndarray:
+        """Return normal GBM terminal prices as a ``float64 (n_sims,)`` array.
+
+        Draw one independent standard normal Z per simulation and evaluate
+        S(T) = s0 * exp((mu - sigma**2/2)*T + sigma*sqrt(T)*Z).
+        Prices use the asset currency, T years, mu year^-1 and sigma
+        year^-1/2. The instance's ``steps`` is unused: this exact terminal
+        law needs no intermediate grid. This method does not simulate the
+        discrete Student t scenario.
+
+        Each batch is a view into the output, filled and transformed in
+        place. The array budget is exactly ``8 * n_sims`` bytes, checked
+        before allocation or RNG sampling; batching does not remove the
+        returned vector's cost. The limit excludes Python/NumPy overhead
+        and caller-held arrays and is not a process RSS limit.
+
+        Calls advance the instance's local RNG. Reproduction requires the
+        same initial RNG state, parameters, batch size and NumPy version.
+        No elementwise identity is promised with full paths, other sampling
+        formats or other NumPy versions. Prices outside finite positive
+        float64 precision raise ValueError, including underflow to zero.
+        """
+        for name, value in (("batch_size", batch_size),
+                            ("max_working_bytes", max_working_bytes)):
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.mu is None or self.sigma is None:
+            raise ValueError("calibrate or supply mu and sigma before generating terminal prices")
+        required = 8 * self.n_sims
+        if required > max_working_bytes:
+            raise ValueError(
+                f"terminal array requires {required} bytes; "
+                f"limit is {max_working_bytes} bytes"
+            )
+
+        # Scale before squaring: the annual sigma**2 may overflow even when
+        # sigma**2*T is finite. Halving first also avoids a spurious overflow
+        # in a representable half-variance.
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            scale = float(self.sigma * np.sqrt(self.horizon))
+            drift = self.mu * self.horizon - (0.5 * scale) * scale
+        if not np.isfinite(drift) or not np.isfinite(scale):
+            raise ValueError("terminal log returns exceed finite precision")
+
+        terminal = np.empty(self.n_sims, dtype=np.float64)
+        log_max = np.log(np.finfo(np.float64).max)
+        log_tiny = np.log(np.finfo(np.float64).tiny)
+        for start in range(0, self.n_sims, int(batch_size)):
+            batch = terminal[start:start + int(batch_size)]
+            self.rng.standard_normal(size=batch.shape, out=batch)
+            with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+                np.multiply(batch, scale, out=batch)
+                batch += drift
+                if np.max(batch) >= log_max or np.min(batch) <= log_tiny:
+                    batch += np.log(self.s0)
+                    np.exp(batch, out=batch)
+                else:
+                    np.exp(batch, out=batch)
+                    batch *= self.s0
+            # Scalar reductions avoid an extra n_sims-sized boolean mask.
+            low, high = np.min(batch), np.max(batch)
+            if not np.isfinite(low) or not np.isfinite(high) or low <= 0:
+                raise ValueError("terminal prices exceed finite positive precision")
+        return terminal
+
 
 def simulate_gbm(s0: float, mu: float, sigma: float, horizon: float,
                  steps: int, n_sims: int, seed: int | None = None) -> np.ndarray:
     """Compatibility entry point for the existing normal GBM pipeline."""
     return GbmSimulator(s0, horizon, steps, n_sims, seed, mu=mu,
                         sigma=sigma).generate_paths()
+
+
+def simulate_terminal_batched(s0: float, mu: float, sigma: float, horizon: float,
+                              n_sims: int, seed: int | None = None, *,
+                              batch_size: int = 10_000,
+                              max_working_bytes: int = 256 * 1024 * 1024) -> np.ndarray:
+    """Sample exact normal GBM terminal prices with a local seeded RNG.
+
+    See ``GbmSimulator.generate_terminal`` for units, memory accounting and
+    reproduction guarantees. No path grid is required. To use the existing
+    ``risk_summary`` contract, callers can construct initial/terminal rows;
+    those additional arrays are outside this function's memory budget.
+    """
+    return GbmSimulator(s0, horizon, 1, n_sims, seed, mu=mu, sigma=sigma).generate_terminal(
+        batch_size=batch_size, max_working_bytes=max_working_bytes
+    )

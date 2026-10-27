@@ -90,9 +90,89 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def check_destination(report_path: Path) -> Path:
+    """Reject an occupied run name before acquiring data or simulating."""
+    destination = report_path.with_suffix("")
+    if destination.exists() or report_path.exists():
+        raise FileExistsError(
+            f"Execution already exists: {destination} or {report_path}. Choose another --report name.")
+    return destination
+
+
+def format_simulation_summary(report, config, terminal_mean, terminal_std) -> str:
+    """Build the terminal summary without calculation or I/O side effects."""
+    snapshot = report["historical_data"]
+    s0 = report["last_price"]
+    mu, sigma = report["parameters"]["mu"], report["parameters"]["sigma"]
+    lines = [f"\nSimulação GBM: {snapshot['ticker']} (preços históricos ajustados)",
+             f"Último preço: {s0:.2f}", f"mu = {mu:.2%} | sigma = {sigma:.2%}",
+             str(report["results"]["risk"]),
+             f"Preço esperado teórico ({config.horizon:g} ano(s)): "
+             f"{report['results']['terminal']['mean']['theoretical']:.2f}",
+             f"Média dos preços finais:  {terminal_mean}",
+             f"Desvio padrão dos preços finais:  {terminal_std}",
+             "Validação analítica (estimativa, teoria e erros):",
+             str(report["results"]["terminal"])]
+    if "out_of_sample" in report:
+        evaluation = report["out_of_sample"]["evaluation"]
+        metrics = evaluation["metrics"]
+        lines.append("Cobertura histórica observada (janelas sem sobreposição): "
+                     f"{metrics['violation_count']}/{metrics['forecast_count']} violações; "
+                     f"taxa observada {metrics['observed_violation_rate']:.2%}, "
+                     f"referência nominal {metrics['nominal_violation_rate']:.2%}.")
+        interval = evaluation.get("violation_rate_interval")
+        if interval:
+            lines.append(f"IC {interval['confidence_level']:.0%} Wilson da taxa observada "
+                         f"({metrics['forecast_count']} previsões): "
+                         f"[{interval['lower']:.2%}, {interval['upper']:.2%}].")
+        lines.extend(f"Aviso: {warning}" for warning in evaluation["warnings"])
+    return "\n".join(lines)
+
+
+def publish_run(report, paths, config, report_path, no_plot):
+    """Write a complete bundle to staging, then publish it atomically."""
+    destination = report_path.with_suffix("")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
+    figures = []
+    plt = None
+    published = False
+    try:
+        if no_plot:
+            import matplotlib
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        ticker = report["historical_data"]["ticker"]
+        figures.append(plot_convergence(report["convergence"], staging / "convergence.png"))
+        figures.append(plot_paths(paths, title=f"GBM price paths: {ticker}",
+                                  save_path=staging / "paths.png"))
+        figures.append(plot_final_distribution(
+            paths, var=report["results"]["risk"]["var"],
+            title=f"Final prices: {ticker} (VaR confidence: {config.confidence:.1%})",
+            save_path=staging / "final-distribution.png"))
+        write_report(report, staging / "report.json")
+        if destination.exists() or report_path.exists():
+            raise FileExistsError(f"Execution already exists: {destination} or {report_path}.")
+        staging.rename(destination)
+        published = True
+    except Exception:
+        shutil.rmtree(staging)
+        raise
+    finally:
+        if plt is not None:
+            try:
+                if published and not no_plot:
+                    plt.show()
+            finally:
+                for figure in figures:
+                    plt.close(figure)
+    return destination
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    check_destination(args.report)
     company = None
     if args.replay:
         saved = read_report(args.replay)
@@ -150,70 +230,10 @@ def main(argv: list[str] | None = None) -> None:
             print(format_company(company))
     elif args.replay:
         print("Este relatório antigo não contém indicadores da empresa.")
-    print(f"\nSimulação GBM: {snapshot['ticker']} (preços históricos ajustados)")
-    s0 = report["last_price"]
-    mu, sigma = report["parameters"]["mu"], report["parameters"]["sigma"]
-    print(f"Último preço: {s0:.2f}")
-    print(f"mu = {mu:.2%} | sigma = {sigma:.2%}")
-    # run_simulation computes risk_summary using the configured confidence.
-    risk = report["results"]["risk"]
-    print(risk)
-    print(f"Preço esperado teórico ({config.horizon:g} ano(s)): "
-          f"{report['results']['terminal']['mean']['theoretical']:.2f}")
-    print("Média dos preços finais: ", paths[-1].mean())
-    print("Desvio padrão dos preços finais: ", paths[-1].std())
-    print("Validação analítica (estimativa, teoria e erros):")
-    print(report["results"]["terminal"])
-    if "out_of_sample" in report:
-        evaluation = report["out_of_sample"]["evaluation"]
-        metrics = evaluation["metrics"]
-        print("Cobertura histórica observada (janelas sem sobreposição): "
-              f"{metrics['violation_count']}/{metrics['forecast_count']} violações; "
-              f"taxa observada {metrics['observed_violation_rate']:.2%}, "
-              f"referência nominal {metrics['nominal_violation_rate']:.2%}.")
-        for warning in evaluation["warnings"]:
-            print(f"Aviso: {warning}")
-    # --report names a run; all artifacts live in its sibling directory.
-    destination = args.report.with_suffix("")
-    if destination.exists() or args.report.exists():
-        raise FileExistsError(f"Execution already exists: {destination} or {args.report}. Choose another --report name.")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))
-    figures = []
-    plt = None
-    published = False
-    try:
-        if args.no_plot:
-            import matplotlib
-            matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        convergence = staging / "convergence.png"
-        figures.append(plot_convergence(report["convergence"], convergence))
-        paths_file = staging / "paths.png"
-        figures.append(plot_paths(paths, title=f"GBM price paths: {snapshot['ticker']}",
-                                  save_path=paths_file))
-        distribution = staging / "final-distribution.png"
-        figures.append(plot_final_distribution(
-            paths, var=risk["var"],
-            title=f"Final prices: {snapshot['ticker']} (VaR confidence: {config.confidence:.1%})",
-            save_path=distribution))
-        write_report(report, staging / "report.json")
-        # Rename the complete bundle only after every artifact is written.
-        if destination.exists():
-            raise FileExistsError(f"Execution already exists: {destination}.")
-        staging.rename(destination)
-        published = True
-    except Exception:
-        shutil.rmtree(staging)
-        raise
-    finally:
-        if plt is not None:
-            try:
-                if published and not args.no_plot:
-                    plt.show()
-            finally:
-                for figure in figures:
-                    plt.close(figure)
+    terminal_mean = paths[-1].mean()
+    terminal_std = paths[-1].std()
+    print(format_simulation_summary(report, config, terminal_mean, terminal_std))
+    destination = publish_run(report, paths, config, args.report, args.no_plot)
     print(f"Relatório: {destination / 'report.json'}")
     for name in ("convergence.png", "paths.png", "final-distribution.png"):
         print(f"Figura: {destination / name}")
