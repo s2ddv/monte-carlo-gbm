@@ -1,8 +1,9 @@
 """Validated adjusted daily prices from yfinance."""
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
+
+from calibration.prices import validate_prices
 
 
 def download_prices(ticker: str, period: str = "3y") -> pd.Series:
@@ -27,15 +28,7 @@ def download_prices(ticker: str, period: str = "3y") -> pd.Series:
     prices = data[matches[0]]
     if not isinstance(prices, pd.Series):
         raise ValueError(f"Unexpected price shape for {ticker}: require one series.")
-    if (not isinstance(prices.index, pd.DatetimeIndex) or prices.index.hasnans
-            or not prices.index.is_unique or not prices.index.is_monotonic_increasing):
-        raise ValueError(f"Invalid price dates for {ticker}: require unique ordered dates.")
-    if len(prices) < 3:
-        raise ValueError(f"Insufficient price history for {ticker}: require at least three prices.")
     try:
-        values = prices.to_numpy(dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid prices for {ticker}: require positive finite numbers.") from exc
-    if not np.isfinite(values).all() or (values <= 0).any():
-        raise ValueError(f"Invalid prices for {ticker}: require positive finite numbers.")
-    return prices.astype(float)
+        return validate_prices(prices, min_observations=3, require_dates=True)
+    except ValueError as exc:
+        raise ValueError(f"Invalid price history for {ticker}: {exc}") from exc

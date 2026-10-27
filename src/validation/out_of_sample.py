@@ -7,21 +7,14 @@ import numpy as np
 import pandas as pd
 
 from calibration.estimation import TRADING_DAYS, estimate_gbm_params, log_returns
+from calibration.prices import validate_prices
 
 
 def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
                            horizon_days: int = 1, alpha: float = 0.95) -> dict:
     """Score disjoint historical horizons using one fit from the initial window."""
-    if (not isinstance(prices, pd.Series) or not isinstance(prices.index, pd.DatetimeIndex)
-            or prices.index.hasnans or not prices.index.is_unique
-            or not prices.index.is_monotonic_increasing):
-        raise ValueError("prices require unique, increasing dates")
-    try:
-        values = prices.to_numpy(dtype=float)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("prices must be finite and positive") from exc
-    if not np.isfinite(values).all() or np.any(values <= 0):
-        raise ValueError("prices must be finite and positive")
+    prices = validate_prices(prices, require_dates=True)
+    values = prices.to_numpy()
     if type(calibration_observations) is not int or calibration_observations < 3:
         raise ValueError("calibration_observations must be at least 3 prices (2 returns)")
     if type(horizon_days) is not int or horizon_days < 1:

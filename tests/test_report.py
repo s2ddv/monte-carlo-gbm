@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,8 @@ from simulation.plotting import plot_convergence
 from calibration.fundamentals import company_snapshot
 from simulation.report import (SimulationConfig, historical_snapshot,
                               prices_from_snapshot, read_replay,
-                              run_simulation, write_report)
+                              run_simulation, terminal_mean_confidence_interval,
+                              write_report)
 
 
 @pytest.fixture
@@ -50,6 +52,13 @@ def test_report_records_inputs_calibration_results_and_replays(snapshot, tmp_pat
     assert terminal["mean"]["estimate"] == paths[-1].mean()
     assert terminal["variance"]["estimate"] == paths[-1].var(ddof=1)
     assert report["convergence"][-1]["mean"] == terminal["mean"]
+    interval = report["results"]["terminal_mean_confidence_interval"]
+    half_width = (NormalDist().inv_cdf(0.975)
+                  * paths[-1].std(ddof=1) / np.sqrt(config.n_sims))
+    assert interval["level"] == 0.95
+    assert interval["unit"] == "asset_price_currency"
+    assert interval["lower"] == pytest.approx(paths[-1].mean() - half_width)
+    assert interval["upper"] == pytest.approx(paths[-1].mean() + half_width)
     assert report["environment"]["numpy"] == np.__version__
     path = tmp_path / "nested" / "run.json"
     write_report(report, path)
@@ -132,6 +141,29 @@ def test_zero_volatility_and_one_path_are_serializable_and_plottable(tmp_path):
     write_report(report, path)
     assert "NaN" not in path.read_text()
     assert report["results"]["terminal"]["variance"]["estimate"] is None
+    assert report["results"]["terminal_mean_confidence_interval"]["lower"] is None
+    assert report["results"]["terminal_mean_confidence_interval"]["upper"] is None
     figure = plot_convergence(report["convergence"], tmp_path / "single.png")
     assert len(figure.axes) == 3
     assert figure.axes[0].get_xscale() == "log"
+
+
+def test_constant_terminal_prices_have_point_confidence_interval():
+    interval = terminal_mean_confidence_interval(np.full(10, 100.0))
+    assert interval["lower"] == interval["upper"] == 100.0
+
+
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_terminal_mean_interval_avoids_intermediate_square_limits(scale):
+    # With two observations a and 2a, SE(mean) = a/2 exactly.
+    interval = terminal_mean_confidence_interval([scale, 2 * scale])
+    z = NormalDist().inv_cdf(0.975)
+    assert interval["lower"] == pytest.approx((1.5 - z / 2) * scale,
+                                                rel=1e-14, abs=0)
+    assert interval["upper"] == pytest.approx((1.5 + z / 2) * scale,
+                                                rel=1e-14, abs=0)
+
+
+def test_large_constant_terminal_interval_is_representable():
+    interval = terminal_mean_confidence_interval([1e308, 1e308])
+    assert interval["lower"] == interval["upper"] == 1e308

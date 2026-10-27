@@ -162,6 +162,16 @@ def test_degenerate_calibration_and_t_df_boundary():
         model.generate_paths("t_student")
 
 
+def test_calibration_rejects_reversed_dates_and_missing_close():
+    model = GbmSimulator(100, 1, 4, 3, seed=42)
+    dates = pd.date_range("2026-01-01", periods=4)
+    reversed_history = pd.Series([100., 101., 102., 103.], index=dates[::-1])
+    missing_history = pd.Series([100., 101., np.nan, 103.], index=dates)
+    for prices in (reversed_history, missing_history):
+        with raises_value_error():
+            model.calibrate(prices)
+
+
 def test_memory_limit_rejects_before_large_allocation():
     model = GbmSimulator(100, 1, 16, 16, seed=1, mu=0.1, sigma=0.2)
     model.MAX_WORKING_BYTES = 2_000  # normal output: 2,176 bytes

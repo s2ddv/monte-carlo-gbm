@@ -95,3 +95,58 @@ def test_invalid_terminal_samples(terminal):
 def test_invalid_theoretical_parameters(parameters):
     with pytest.raises(ValueError):
         terminal_theory(*parameters)
+
+
+def _decimal_terminal_reference(s0, mu, sigma, horizon):
+    """Direct formulas in 1000-digit Decimal, independent of log-space code."""
+    from decimal import Decimal, localcontext
+    from scipy.special import ndtri
+
+    with localcontext() as context:
+        context.prec = 1000
+        price, drift, volatility, time = map(
+            Decimal.from_float, map(float, (s0, mu, sigma, horizon)))
+        mean = price * (drift * time).exp()
+        variance = price * price * (2 * drift * time).exp() * (
+            (volatility * volatility * time).exp() - 1)
+        quantiles = {
+            str(p): float(price * ((drift - volatility * volatility / 2) * time
+                                  + volatility * time.sqrt()
+                                  * Decimal.from_float(float(ndtri(p)))).exp())
+            for p in QUANTILES
+        }
+    return {"mean": float(mean), "variance": float(variance), "quantiles": quantiles}
+
+
+@pytest.mark.parametrize("parameters", [
+    (1e200, 0, 0, 1),                 # Squared mean overflows, variance is zero.
+    (1e-300, 720, 0.2, 1),           # exp(mu*T) overflows before scaling by s0.
+    (1e300, -800, 0.2, 1),           # exp(mu*T) underflows before scaling by s0.
+    (1e200, 0, 1e-200, 1),           # sigma squared underflows; variance is ~1.
+    (100, 0, 1e160, 1e-320),         # sigma squared overflows; sigma^2*T is ~1.
+    (1e-100, 0, np.sqrt(710), 1),     # exp(sigma^2*T) overflows before scaling.
+    (1e200, 0, 1e200, 0),            # Zero horizon bypasses enormous volatility.
+    (1e308, 0, 0, 1),                # Finite deterministic price near float max.
+    (1e-160, 0, 0.5, 1),            # Positive, representable subnormal variance.
+])
+def test_extreme_theory_matches_high_precision_reference(parameters):
+    expected = _decimal_terminal_reference(*parameters)
+    with np.errstate(all="raise"):
+        actual = terminal_theory(*parameters)
+    for name in ("mean", "variance"):
+        assert actual[name] == pytest.approx(expected[name], rel=3e-11, abs=0)
+    for probability in expected["quantiles"]:
+        assert actual["quantiles"][probability] == pytest.approx(
+            expected["quantiles"][probability], rel=3e-11, abs=0)
+
+
+@pytest.mark.parametrize("parameters", [
+    (1e308, 1, 0, 1),          # Mean exceeds float64 range.
+    (1e-300, -100, 0, 1),     # Strictly positive mean rounds to zero.
+    (1e200, 0, 1, 1),         # Variance exceeds float64 range.
+    (1e-200, 0, 0.2, 1),      # Positive variance rounds to zero.
+    (100, 0, 1e308, 1e308),   # Nonrepresentable integrated variance.
+])
+def test_theory_rejects_nonrepresentable_final_statistics(parameters):
+    with pytest.raises(ValueError, match="finite precision"):
+        terminal_theory(*parameters)

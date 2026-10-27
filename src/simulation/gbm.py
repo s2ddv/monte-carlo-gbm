@@ -8,6 +8,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 from calibration.estimation import TRADING_DAYS
+from calibration.prices import validate_prices
 from simulation.base import BaseStochasticSimulator
 
 DistributionType = Literal["normal", "t_student"]
@@ -43,15 +44,8 @@ class GbmSimulator(BaseStochasticSimulator):
         The t fit estimates location and scale as nuisance parameters. The
         simulation retains the classical sample-moment ``mu`` and ``sigma``.
         """
-        if (not isinstance(historical_prices, pd.Series)
-                or len(historical_prices) < 3):
-            raise ValueError("historical_prices must contain at least three prices")
-        try:
-            values = historical_prices.to_numpy(dtype=float)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("historical prices must be finite and positive") from exc
-        if not np.isfinite(values).all() or np.any(values <= 0):
-            raise ValueError("historical prices must be finite and positive")
+        historical_prices = validate_prices(historical_prices, min_observations=3)
+        values = historical_prices.to_numpy()
 
         returns = np.diff(np.log(values))
         if not np.isfinite(returns).all():

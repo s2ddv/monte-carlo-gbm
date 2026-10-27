@@ -6,11 +6,13 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import platform
+from statistics import NormalDist
 
 import numpy as np
 import pandas as pd
 
 from calibration.estimation import TRADING_DAYS, estimate_gbm_params
+from calibration.prices import validate_prices
 from simulation.gbm import simulate_gbm
 from risk.statistics import risk_summary
 from validation.statistics import compare_terminal, convergence_analysis, terminal_theory
@@ -43,13 +45,7 @@ def _digest(observations):
 
 def historical_snapshot(prices, *, ticker, period, retrieved_at, source="yfinance"):
     """Record the exact adjusted closes, observation dates and retrieval time."""
-    if (not isinstance(prices, pd.Series) or len(prices) < 3
-            or not isinstance(prices.index, pd.DatetimeIndex)
-            or prices.index.hasnans or not prices.index.is_unique
-            or not prices.index.is_monotonic_increasing
-            or not np.isfinite(prices.to_numpy(dtype=float)).all()
-            or (prices <= 0).any()):
-        raise ValueError("Require at least 3 positive finite prices with unique ordered dates.")
+    prices = validate_prices(prices, min_observations=3, require_dates=True)
     timestamp = pd.Timestamp(retrieved_at)
     if pd.isna(timestamp) or timestamp.tzinfo is None:
         raise ValueError("retrieved_at must include a timezone.")
@@ -78,6 +74,38 @@ def prices_from_snapshot(snapshot):
     return prices
 
 
+def terminal_mean_confidence_interval(terminal, *, level=0.95):
+    """Approximate normal CI for the iid GBM terminal-price sample mean.
+
+    Conditional on fixed GBM parameters. The standard error is estimated from
+    the simulated sample; the CLT approximation is undefined for a single path.
+    """
+    sample = np.asarray(terminal, dtype=float)
+    if (sample.ndim != 1 or sample.size == 0 or not np.isfinite(sample).all()
+            or np.any(sample <= 0) or not 0 < level < 1):
+        raise ValueError("Require finite positive terminal prices and 0 < level < 1.")
+    result = {"level": level, "unit": "asset_price_currency",
+              "method": "normal_clt_sample_standard_error",
+              "parameter_scope": "fixed_calibrated_gbm_parameters",
+              "lower": None, "upper": None}
+    if sample.size == 1:
+        return result
+    # Scale before squaring deviations: both tiny and huge finite prices can
+    # have a representable standard error despite an unscaled variance that
+    # underflows or overflows float64.
+    scale = float(np.max(sample))
+    normalized = sample / scale
+    estimate = float(np.mean(normalized) * scale)
+    standard_error = float((np.std(normalized, ddof=1)
+                            / np.sqrt(sample.size)) * scale)
+    half_width = NormalDist().inv_cdf((1 + level) / 2) * standard_error
+    lower, upper = estimate - half_width, estimate + half_width
+    if not np.isfinite([estimate, standard_error, lower, upper]).all():
+        raise ValueError("Terminal mean confidence interval exceeds finite precision.")
+    result.update({"lower": float(lower), "upper": float(upper)})
+    return result
+
+
 def run_simulation(snapshot, config, out_of_sample_config=None):
     """Return a deterministic, JSON-safe report and its simulated paths."""
     prices = prices_from_snapshot(snapshot)
@@ -99,6 +127,8 @@ def run_simulation(snapshot, config, out_of_sample_config=None):
                         "convergence": "nested prefixes of the same terminal sample",
                         "undefined_values": "null (N=1 variance or zero-reference relative error)"},
         "results": {"terminal": comparison,
+                    "terminal_mean_confidence_interval":
+                        terminal_mean_confidence_interval(paths[-1]),
                     "risk": risk_summary(paths, config.confidence)},
         "convergence": convergence_analysis(paths[-1], theory),
         "environment": {"python": platform.python_version(),

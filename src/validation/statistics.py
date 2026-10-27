@@ -1,5 +1,6 @@
 """Analytical terminal GBM benchmarks and nested-sample convergence."""
 
+import math
 from statistics import NormalDist
 
 import numpy as np
@@ -8,22 +9,55 @@ QUANTILES = (0.05, 0.5, 0.95)
 
 
 def terminal_theory(s0, mu, sigma, horizon):
-    """Moments and quantiles of S(T), including the zero-volatility limit."""
+    """GBM moments and quantiles, calculated in log space.
+
+    Price is in asset currency, horizon in years, mu in year^-1 and sigma
+    in year^-1/2. Positive moments/quantiles must remain representable as
+    float64; a genuinely zero variance is reserved for sigma=0 or T=0.
+    Intermediate squares and exponentials must not restrict that range.
+    """
     if (not np.isfinite([s0, mu, sigma, horizon]).all()
             or s0 <= 0 or sigma < 0 or horizon < 0):
         raise ValueError("Require finite parameters, s0 > 0, sigma/horizon >= 0.")
-    with np.errstate(over="raise", invalid="raise"):
-        mean = float(s0 * np.exp(mu * horizon))
-        variance = float(mean**2 * np.expm1(sigma**2 * horizon))
-        quantiles = {
-            str(p): float(s0 * np.exp((mu - sigma**2 / 2) * horizon
-                         + sigma * np.sqrt(horizon) * NormalDist().inv_cdf(p)))
-            for p in QUANTILES
-        }
-    result = {"mean": mean, "variance": variance, "quantiles": quantiles}
-    if not np.isfinite([mean, variance, *quantiles.values()]).all():
-        raise ValueError("Theoretical terminal statistics exceed finite precision.")
-    return result
+    s0, mu, sigma, horizon = map(float, (s0, mu, sigma, horizon))
+    message = "Theoretical terminal statistics exceed finite precision."
+
+    def positive_exp(log_value):
+        try:
+            value = math.exp(log_value)
+        except OverflowError as exc:
+            raise ValueError(message) from exc
+        if not math.isfinite(value) or value == 0:
+            raise ValueError(message)
+        return value
+
+    log_mean = math.log(s0) + mu * horizon
+    mean = s0 if mu == 0 or horizon == 0 else positive_exp(log_mean)
+    if sigma == 0 or horizon == 0:
+        return {"mean": mean, "variance": 0.0,
+                "quantiles": {str(p): mean for p in QUANTILES}}
+
+    # v = sigma^2*T may underflow even when mean^2*expm1(v) is representable.
+    log_v = 2 * math.log(sigma) + math.log(horizon)
+    try:
+        v = math.exp(log_v)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
+    if log_v < -36:
+        # log(expm1(v)) = log(v) + O(v), below float64 relative precision.
+        log_expm1_v = log_v
+    elif v <= 1:
+        log_expm1_v = math.log(math.expm1(v))
+    else:
+        log_expm1_v = v + math.log1p(-math.exp(-v))
+    variance = positive_exp(2 * log_mean + log_expm1_v)
+    standard_deviation_log = math.exp(log_v / 2)
+    quantiles = {
+        str(p): positive_exp(log_mean - v / 2
+                            + standard_deviation_log * NormalDist().inv_cdf(p))
+        for p in QUANTILES
+    }
+    return {"mean": mean, "variance": variance, "quantiles": quantiles}
 
 
 def _comparison(estimate, theoretical):

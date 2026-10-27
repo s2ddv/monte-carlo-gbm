@@ -53,13 +53,14 @@ This project aims to:
 - Optional chronological historical forecasts with frozen calibration and observed VaR coverage
 - JSON reports containing historical snapshots and offline replay
 - Risk metrics: Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall)
+- Approximate 95% confidence interval for the simulated terminal-price mean under normal GBM
 - An abstract simulator interface and an optional Student t shock scenario through the Python API
 
 **Planned**
 
 - European option pricing via Monte Carlo, validated against the Black-Scholes closed-form solution
 - Variance reduction techniques (antithetic variates, control variates)
-- Confidence intervals
+- Confidence intervals for additional estimators
 - Multi-asset simulation with correlated returns (Cholesky decomposition)
 - Configuration files
 
@@ -353,6 +354,8 @@ The JSON records:
 - Horizon in years, steps, simulation count, seed and risk confidence level.
 - Simulated and theoretical mean, variance and quantiles, with absolute and
   relative errors, risk metrics and every convergence checkpoint.
+- An approximate 95% confidence interval for the Monte Carlo mean of terminal
+  prices, in the asset's price currency.
 - Python and relevant package versions, RNG and numerical conventions.
 - `company_analysis`: company identity, source URL, retrieval/reference dates,
   currencies, each metric's provider field, value, period and availability reason.
@@ -384,6 +387,18 @@ parameterized for GBM. `mu` is the price drift, not the mean log return.
 point mass and is handled directly. Empirical variance uses `ddof=1` (unbiased);
 quantiles use NumPy's linear interpolation at 5%, 50% and 95%. Quantiles describe
 the terminal distribution, not confidence intervals for an estimator.
+
+The report's `terminal_mean_confidence_interval` estimates Monte Carlo sampling
+uncertainty for the mean price under **normal GBM with fixed calibrated
+parameters**. It uses `sample mean ± z(0.975) × sample standard deviation / √N`,
+the normal approximation justified by the central limit theorem for independent
+terminal prices with finite GBM variance. The level is 95%, and both bounds
+have the asset's price-currency unit. At `N=1`, both bounds are JSON `null`
+because the sample standard deviation cannot be estimated. This interval is
+for the **mean estimator**; the reported 5%/50%/95% price quantiles describe
+individual simulated prices. Neither includes historical calibration
+uncertainty or model error. For small samples or strongly skewed terminal
+prices, the normal approximation may have poor coverage.
 
 Absolute error is `abs(estimate - theory)`; relative error divides that by
 `abs(theory)`. Undefined values are JSON `null`: sample variance at `N=1`, and
@@ -496,8 +511,11 @@ Calibrating the model with real market data:
 import numpy as np
 import yfinance as yf
 
+from calibration.prices import validate_prices
+
 prices = yf.download("PETR4.SA", period="3y", auto_adjust=True)["Close"].squeeze()
-log_returns = np.log(prices / prices.shift(1)).dropna()
+prices = validate_prices(prices, min_observations=3, require_dates=True)
+log_returns = np.log(prices).diff().iloc[1:]
 
 sigma = log_returns.std() * np.sqrt(252)
 mu = log_returns.mean() * 252 + 0.5 * sigma**2

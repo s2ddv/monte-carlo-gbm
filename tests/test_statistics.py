@@ -59,6 +59,39 @@ class RiskSummaryTests(unittest.TestCase):
                 self.assertTrue(0 <= summary["prob_loss"] <= 1)
                 self.assertTrue(0.4 <= summary["prob_loss"] <= 0.5)
 
+    def test_extreme_finite_means_do_not_overflow(self):
+        cases = [
+            ([[1e308, 1e308], [1e308, 1e308]], 1e308, 0.0),
+            ([[0, 0], [-1e308, -1e308]], -1e308, 1e308),
+            ([[0, 0], [1e308, 1e308]], 1e308, -1e308),
+        ]
+        for paths, expected_price, expected_cvar in cases:
+            with self.subTest(paths=paths), np.errstate(all="raise"):
+                summary = risk_summary(paths)
+                self.assertTrue(np.isfinite(list(summary.values())).all())
+                self.assertEqual(summary["expected_price"], expected_price)
+                self.assertEqual(summary["cvar"], expected_cvar)
+
+    def test_extreme_percentile_uses_representable_interpolation(self):
+        from decimal import Decimal, localcontext
+
+        for confidence in (0.25, 0.5, 0.75):
+            with self.subTest(confidence=confidence), np.errstate(all="raise"):
+                summary = risk_summary([[0, 0], [-1e308, 1e308]], confidence)
+                with localcontext() as context:
+                    context.prec = 400
+                    high = Decimal.from_float(1e308)
+                    weight = Decimal.from_float(confidence)
+                    expected_var = float(-high * (1 - weight) + high * weight)
+                self.assertEqual(summary["var"], expected_var)
+                self.assertEqual(summary["cvar"], 1e308)
+                self.assertEqual(summary["expected_price"], 0)
+
+    def test_unrepresentable_losses_raise_instead_of_returning_nan(self):
+        with np.errstate(all="raise"):
+            with self.assertRaisesRegex(ValueError, "finite precision"):
+                risk_summary([[1e308], [-1e308]])
+
     def test_invalid_confidence(self):
         for confidence in (-0.1, 0, 1, 1.1, np.nan):
             with self.subTest(confidence=confidence), self.assertRaises(ValueError):
