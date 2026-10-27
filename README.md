@@ -144,13 +144,18 @@ $$
 
 ### Monte Carlo Estimation and Error
 
-For $N$ independent simulations, the expected value of a quantity $X$ is estimated by the sample mean $\bar{X}$. The standard error shrinks at a rate of $1/\sqrt{N}$:
+For $N$ independent simulations of a quantity $X$ with finite variance,
+its expected value is estimated by the sample mean $\bar{X}$. The standard
+error shrinks at a rate of $1/\sqrt{N}$:
 
 $$
 \text{SE} = \frac{s}{\sqrt{N}}
 $$
 
-where $s$ is the sample standard deviation. This is why convergence analysis and variance reduction techniques matter in practice.
+where $s$ is the sample standard deviation. This applies to terminal prices
+under normal GBM. Terminal prices in the Student t shock scenario do not have
+finite theoretical variance, so this standard error and the normal GBM
+convergence reference do not apply there.
 
 ### Risk Metrics
 

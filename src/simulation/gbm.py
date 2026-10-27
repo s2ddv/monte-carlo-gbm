@@ -76,14 +76,40 @@ class GbmSimulator(BaseStochasticSimulator):
         The output holds the working shocks and cumulative log returns in
         place. The t mode requires a calibrated ``df > 2`` and rescales the
         shocks to unit variance before applying the annualized volatility.
+        Unrepresentable increments or prices raise ``ValueError``. In t
+        mode ``mu`` controls the log-return location through the normal-mode
+        convention; it is not a finite expected-price growth rate.
         """
         if dist_type not in ("normal", "t_student"):
             raise ValueError("dist_type must be 'normal' or 't_student'")
         if self.mu is None or self.sigma is None:
             raise ValueError("calibrate or supply mu and sigma before generating paths")
         if (dist_type == "t_student" and
-                (self.calibrated_df is None or self.calibrated_df <= 2)):
+                (isinstance(self.calibrated_df, bool)
+                 or not isinstance(self.calibrated_df, Real)
+                 or not np.isfinite(self.calibrated_df)
+                 or self.calibrated_df <= 2)):
             raise ValueError("t_student requires calibrated degrees of freedom above 2")
+
+        # Preserve the normal mode's arithmetic order for existing replays.
+        # For extreme annual parameters, sigma**2 can overflow even when
+        # sigma**2 * dt is representable. Retry using the per-step scale.
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            scale = float(self.sigma * np.sqrt(self.dt))
+            try:
+                drift = (self.mu - 0.5 * self.sigma**2) * self.dt
+            except OverflowError:
+                drift = float("nan")
+            if not np.isfinite(drift):
+                drift = float(self.mu * self.dt - 0.5 * np.float64(scale) ** 2)
+            if dist_type == "t_student":
+                df = self.calibrated_df
+                assert df is not None
+                # Form the bounded variance factor first: dt * (df - 2)
+                # may overflow even though the final t scale is finite.
+                scale *= float(np.sqrt((df - 2) / df))
+        if not np.isfinite(drift) or not np.isfinite(scale):
+            raise ValueError("simulation increments exceed finite precision")
 
         # NumPy's t sampler returns a separate full shock matrix; the normal
         # sampler writes directly into the output. Check before either allocates.
@@ -94,18 +120,25 @@ class GbmSimulator(BaseStochasticSimulator):
         increments = paths[1:]
         if dist_type == "normal":
             self.rng.standard_normal(size=increments.shape, out=increments)
-            scale = self.sigma * np.sqrt(self.dt)
         else:
             df = self.calibrated_df
             assert df is not None
             increments[:] = self.rng.standard_t(df=df, size=increments.shape)
-            scale = self.sigma * np.sqrt(self.dt * (df - 2) / df)
 
-        np.multiply(increments, scale, out=increments)
-        increments += (self.mu - 0.5 * self.sigma**2) * self.dt
-        np.cumsum(increments, axis=0, out=increments)
-        np.exp(increments, out=increments)
-        increments *= self.s0
+        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+            np.multiply(increments, scale, out=increments)
+            increments += drift
+            np.cumsum(increments, axis=0, out=increments)
+            # Only move the initial price into log space when exp alone would
+            # overflow or enter the subnormal range before multiplication.
+            # Keep the usual arithmetic order for normal-sized replays.
+            if (np.max(increments) >= np.log(np.finfo(np.float64).max)
+                    or np.min(increments) <= np.log(np.finfo(np.float64).tiny)):
+                increments += np.log(self.s0)
+                np.exp(increments, out=increments)
+            else:
+                np.exp(increments, out=increments)
+                increments *= self.s0
         # Scalar reductions avoid another full-size boolean mask after the
         # output has been filled. NaN and either infinity fail these checks.
         min_price, max_price = np.min(paths), np.max(paths)

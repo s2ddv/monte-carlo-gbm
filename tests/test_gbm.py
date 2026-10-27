@@ -1,6 +1,7 @@
 """Offline checks for the public GBM and discrete t scenario contracts."""
 
 from contextlib import contextmanager
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pandas as pd
@@ -171,3 +172,54 @@ def test_memory_limit_rejects_before_large_allocation():
     model.calibrated_df = 5.0
     with raises_value_error():
         model.generate_paths("t_student")
+
+
+def test_extreme_finite_parameters_keep_finite_increments():
+    # sigma**2 and dt*(df-2) overflow separately in naive arithmetic, yet
+    # the per-step volatility and standardized t factor are representable.
+    model = GbmSimulator(100, 1e300, 1, 12, seed=14, mu=0, sigma=1e-150)
+    model.calibrated_df = 1e20
+    paths = model.generate_paths("t_student")
+    assert paths.shape == (2, 12)
+    assert np.isfinite(paths).all() and np.all(paths > 0)
+    np.testing.assert_array_equal(paths[0], np.full(12, 100.0))
+
+    # The annual volatility itself can overflow when squared, although its
+    # product with sqrt(dt) and the per-step drift remain finite.
+    tiny_horizon = GbmSimulator(100, 1e-320, 1, 12, seed=14,
+                                mu=0, sigma=1e160)
+    tiny_paths = tiny_horizon.generate_paths()
+    assert np.isfinite(tiny_paths).all() and np.all(tiny_paths > 0)
+
+
+def test_unrepresentable_increments_fail_before_rng_advances():
+    model = GbmSimulator(100, 1, 2, 5, seed=29, mu=0, sigma=1e200)
+    before = model.rng.bit_generator.state
+    with raises_value_error():
+        model.generate_paths()
+    assert model.rng.bit_generator.state == before
+
+
+def test_invalid_t_degrees_of_freedom_fail_before_rng_advances():
+    model = GbmSimulator(100, 1, 2, 5, seed=31, mu=0, sigma=0.2)
+    before = model.rng.bit_generator.state
+    for df in (None, -1, 0, 2, np.nan, np.inf, True, "5"):
+        model.calibrated_df = df
+        with raises_value_error():
+            model.generate_paths("t_student")
+        assert model.rng.bit_generator.state == before
+
+
+def test_extreme_initial_price_and_drift_preserve_finite_price():
+    with localcontext() as context:
+        context.prec = 80
+        large_growth = float(Decimal("1e-300") * Decimal(800).exp())
+        large_decline = float(Decimal("1e300") * Decimal(-800).exp())
+
+    for initial, drift, expected in (
+        (1e-300, 800, large_growth),
+        (1e300, -800, large_decline),
+    ):
+        paths = simulate_gbm(initial, drift, 0, 1, 1, 1, seed=0)
+        np.testing.assert_array_equal(paths[0], [initial])
+        np.testing.assert_allclose(paths[1], [expected], rtol=1e-12)
