@@ -38,6 +38,23 @@ def positive_float(value: str) -> float:
     return number
 
 
+def nonnegative_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a nonnegative finite number") from exc
+    if not 0 <= number < float("inf"):
+        raise argparse.ArgumentTypeError("must be a nonnegative finite number")
+    return number
+
+
+def unit_interval(value: str) -> float:
+    number = nonnegative_float(value)
+    if number > 1:
+        raise argparse.ArgumentTypeError("must be between 0 and 1")
+    return number
+
+
 def confidence_level(value: str) -> float:
     try:
         number = float(value)
@@ -80,13 +97,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--replay", type=Path,
                         help="replay a report offline; uses its data and simulation settings")
     parser.add_argument("--out-of-sample", action="store_true",
-                        help="add fixed-calibration chronological historical diagnostics")
+                        help="add chronological historical diagnostics")
     parser.add_argument("--calibration-observations", type=positive_int,
                         help="number of initial closes used only for historical calibration")
     parser.add_argument("--evaluation-horizon-days", type=positive_int, default=1,
                         help="nonoverlapping historical horizon in trading observations (default: 1)")
     parser.add_argument("--evaluation-confidence", type=confidence_level, default=0.95,
                         help="historical VaR confidence (default: 0.95)")
+    parser.add_argument("--calibration-mode", choices=("fixed", "rolling", "expanding"),
+                        default="fixed", help="historical calibration window (default: fixed)")
+    parser.add_argument("--recalibration-frequency", type=positive_int, default=1,
+                        help="refit every N forecast origins (default: 1)")
+    parser.add_argument("--calibration-sensitivity", action="store_true",
+                        help="add analytic parameter-sensitivity scenarios")
+    parser.add_argument("--mu-delta", type=nonnegative_float, default=0.02,
+                        help="absolute annual drift perturbation (default: 0.02)")
+    parser.add_argument("--sigma-relative-delta", type=unit_interval, default=0.2,
+                        help="relative volatility perturbation (default: 0.2)")
     return parser
 
 
@@ -185,22 +212,43 @@ def main(argv: list[str] | None = None) -> None:
             historical_config = {
                 "calibration_observations": protocol["calibration_observations"],
                 "horizon_days": protocol["horizon_days"], "alpha": protocol["alpha"]}
+            for key in ("calibration_mode", "recalibration_frequency"):
+                if key in protocol:
+                    historical_config[key] = protocol[key]
+        sensitivity_config = None
+        if "calibration_sensitivity" in saved:
+            sensitivity_config = {
+                "mu_delta": saved["calibration_sensitivity"]["configuration"]["mu_delta"],
+                "sigma_relative_delta": saved["calibration_sensitivity"]["configuration"]["sigma_relative_delta"]}
         if args.out_of_sample:
             if args.calibration_observations is None:
                 parser.error("--out-of-sample requires --calibration-observations")
             historical_config = {
                 "calibration_observations": args.calibration_observations,
                 "horizon_days": args.evaluation_horizon_days,
-                "alpha": args.evaluation_confidence}
+                "alpha": args.evaluation_confidence,
+                "calibration_mode": args.calibration_mode,
+                "recalibration_frequency": args.recalibration_frequency}
+        if args.calibration_sensitivity:
+            sensitivity_config = {"mu_delta": args.mu_delta,
+                                  "sigma_relative_delta": args.sigma_relative_delta}
     else:
         if args.out_of_sample and args.calibration_observations is None:
             parser.error("--out-of-sample requires --calibration-observations")
         if not args.out_of_sample and args.calibration_observations is not None:
             parser.error("--calibration-observations requires --out-of-sample")
+        if not args.out_of_sample and (args.calibration_mode != "fixed"
+                                      or args.recalibration_frequency != 1):
+            parser.error("calibration mode/frequency requires --out-of-sample")
         historical_config = ({"calibration_observations": args.calibration_observations,
                               "horizon_days": args.evaluation_horizon_days,
-                              "alpha": args.evaluation_confidence}
+                              "alpha": args.evaluation_confidence,
+                              "calibration_mode": args.calibration_mode,
+                              "recalibration_frequency": args.recalibration_frequency}
                              if args.out_of_sample else None)
+        sensitivity_config = ({"mu_delta": args.mu_delta,
+                               "sigma_relative_delta": args.sigma_relative_delta}
+                              if args.calibration_sensitivity else None)
         if args.ticker is None:
             while True:
                 try:
@@ -223,7 +271,8 @@ def main(argv: list[str] | None = None) -> None:
                                        retrieved_at=datetime.now(timezone.utc).isoformat())
         config = SimulationConfig(args.horizon, args.steps, args.n_sims,
                                   args.seed, args.confidence)
-    report, paths = run_simulation(snapshot, config, historical_config)
+    report, paths = run_simulation(snapshot, config, historical_config,
+                                   sensitivity_config)
     if company is not None:
         report["company_analysis"] = company
         if args.replay:

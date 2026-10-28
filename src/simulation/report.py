@@ -17,6 +17,7 @@ from simulation.gbm import simulate_gbm
 from risk.statistics import risk_summary
 from validation.statistics import compare_terminal, convergence_analysis, terminal_theory
 from validation.out_of_sample import evaluate_out_of_sample
+from validation.calibration_sensitivity import calibration_sensitivity
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ def terminal_mean_confidence_interval(terminal, *, level=0.95):
     return result
 
 
-def run_simulation(snapshot, config, out_of_sample_config=None):
+def run_simulation(snapshot, config, out_of_sample_config=None, sensitivity_config=None):
     """Return a deterministic, JSON-safe report and its simulated paths."""
     prices = prices_from_snapshot(snapshot)
     mu, sigma = estimate_gbm_params(prices)
@@ -144,6 +145,12 @@ def run_simulation(snapshot, config, out_of_sample_config=None):
             ("source", "price_field", "retrieved_at", "first_date", "last_date", "sha256")
         }
         report["out_of_sample"] = diagnostic
+    if sensitivity_config is not None:
+        if not isinstance(sensitivity_config, dict):
+            raise ValueError("sensitivity_config must be a mapping")
+        report["calibration_sensitivity"] = calibration_sensitivity(
+            s0, mu, sigma, config.horizon, alpha=config.confidence,
+            **sensitivity_config)
     # Fail on nonfinite computations instead of writing nonstandard JSON.
     json.dumps(report, allow_nan=False)
     return report, paths
@@ -171,7 +178,17 @@ def read_report(path):
         historical_config = {
             "calibration_observations": protocol["calibration_observations"],
             "horizon_days": protocol["horizon_days"], "alpha": protocol["alpha"]}
-    expected, _ = run_simulation(snapshot, config, historical_config)
+        for key in ("calibration_mode", "recalibration_frequency"):
+            if key in protocol:
+                historical_config[key] = protocol[key]
+    sensitivity_config = None
+    if "calibration_sensitivity" in report:
+        saved_sensitivity = report["calibration_sensitivity"]
+        sensitivity_config = {
+            "mu_delta": saved_sensitivity["configuration"]["mu_delta"],
+            "sigma_relative_delta": saved_sensitivity["configuration"]["sigma_relative_delta"]}
+    expected, _ = run_simulation(snapshot, config, historical_config,
+                                 sensitivity_config)
     for key in ("last_price", "parameters", "conventions", "results", "convergence"):
         if key not in report or report[key] != expected[key]:
             raise ValueError(f"Replay result mismatch in {key}: saved values differ from the reproduced run.")
@@ -183,6 +200,9 @@ def read_report(path):
             expected_diagnostic["evaluation"].pop("violation_rate_interval", None)
         if saved_diagnostic != expected_diagnostic:
             raise ValueError("Replay result mismatch in out_of_sample: saved values differ from the reproduced run.")
+    if "calibration_sensitivity" in report and (report["calibration_sensitivity"]
+                                                 != expected["calibration_sensitivity"]):
+        raise ValueError("Replay result mismatch in calibration_sensitivity.")
     return report
 
 

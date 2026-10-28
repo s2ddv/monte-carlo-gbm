@@ -50,7 +50,8 @@ This project aims to:
 - Saved path fan charts and terminal-price histograms, with optional display
 - Analytical validation of terminal mean, sample variance and 5%/50%/95% quantiles
 - Nested-sample convergence analysis and saved error charts
-- Optional chronological historical forecasts with frozen calibration and observed VaR coverage
+- Optional chronological historical forecasts with fixed, rolling or expanding calibration and observed VaR coverage
+- Analytical sensitivity of expected terminal price, terminal quantiles and VaR to explicit drift and volatility perturbations
 - JSON reports containing historical snapshots and offline replay
 - Risk metrics: Value at Risk (VaR) and Conditional Value at Risk (CVaR / Expected Shortfall)
 - Approximate 95% confidence interval for the simulated terminal-price mean under normal GBM
@@ -322,6 +323,49 @@ incompatible currencies. Non-equity instruments receive a warning because
 company metrics may not apply. A fundamentals-provider failure is shown explicitly
 and the price simulation can still run; missing price history stops it with an
 actionable error.
+
+### Historical validation and calibration sensitivity
+
+The optional historical diagnostic scores complete, disjoint horizons of
+`--evaluation-horizon-days` observed trading intervals. The first forecast
+starts at the last of `--calibration-observations` initial closes. The default
+`fixed` mode fits those initial closes once, preserving earlier reports.
+`rolling` fits the most recent N closes available at each recalibration origin;
+`expanding` fits every close from the start through that origin. Recalibration
+occurs every `--recalibration-frequency` forecast origins; between fits, the
+latest parameters are reused. No fit can see a close after its origin. The
+final incomplete horizon is excluded. Each moving or expanding forecast records
+origin and target dates, fitted parameters and calibration dates; fixed-mode
+parameters and dates remain in the top-level calibration record for legacy
+report compatibility. Reported bias, MAE, RMSE and
+strict VaR violation rate describe the scored historical sample. The nominal
+violation rate is `1 - alpha`; a small number of forecasts gives a noisy
+comparison. Disjoint targets do not guarantee independent market outcomes or
+prove GBM is calibrated.
+
+```bash
+python main.py --ticker AAPL --period 5y --out-of-sample \
+  --calibration-observations 252 --calibration-mode rolling \
+  --recalibration-frequency 2 --evaluation-horizon-days 5 \
+  --calibration-sensitivity --mu-delta 0.02 \
+  --sigma-relative-delta 0.2 --no-plot --report reports/aapl-research.json
+```
+
+Sensitivity evaluates the exact GBM terminal formulas on nine combinations
+of annual drift shifts `-delta, 0, +delta` and volatility multipliers
+`1-relative_delta, 1, 1+relative_delta`. The defaults are 0.02 annual drift
+(two percentage points) and 0.2 relative volatility (20%). For horizon T in
+years, expected price is `S0 exp(mu T)`, price quantile p is
+`S0 exp((mu - sigma²/2)T + sigma sqrt(T) Phi^-1(p))`, and loss VaR at
+confidence alpha is `S0 - price_quantile(1-alpha)`. Output ranges are the
+minimum and maximum over these *chosen scenarios*, conditional on the GBM
+model. They are not estimated confidence intervals or guaranteed prediction
+bounds. They do not include historical parameter sampling uncertainty,
+Monte Carlo error, model error or future regime changes. Terminal price
+percentiles describe outcomes under one parameter pair; the separate
+confidence interval of the simulated mean describes sampling error of a
+Monte Carlo estimator with fixed parameters. The analytic sensitivity uses
+no random draws. Replay preserves the saved settings and prices offline.
 
 ### Reproducible reports
 

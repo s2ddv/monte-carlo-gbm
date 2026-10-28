@@ -1,4 +1,4 @@
-"""Chronological, fixed-calibration historical GBM diagnostics."""
+"""Chronological GBM diagnostics with fixed, rolling or expanding calibration."""
 
 from statistics import NormalDist
 from numbers import Real
@@ -39,13 +39,43 @@ def _violation_rate_interval(violations: int, forecasts: int) -> dict:
     }
 
 
+def _calibration_record(training: pd.Series) -> dict:
+    """Fit daily log returns; record price drift/year and volatility/sqrt(year)."""
+    returns = log_returns(training)
+    mu, sigma = estimate_gbm_params(training)
+    daily_mean = float(returns.mean())
+    daily_std = float(returns.std(ddof=1))
+    if not np.isfinite([mu, sigma, daily_mean, daily_std]).all():
+        raise ValueError("calibration exceeds finite precision")
+    return {"first_date": training.index[0].isoformat(),
+            "last_date": training.index[-1].isoformat(),
+            "price_count": len(training), "return_count": len(returns),
+            "mean_daily_log_return": daily_mean,
+            "std_daily_log_return": daily_std, "mu": mu, "sigma": sigma,
+            "trading_days_per_year": TRADING_DAYS, "log_return_std_ddof": 1}
+
+
 def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
-                           horizon_days: int = 1, alpha: float = 0.95) -> dict:
-    """Score disjoint historical horizons using one fit from the initial window.
+                           horizon_days: int = 1, alpha: float = 0.95,
+                           calibration_mode: str = "fixed",
+                           recalibration_frequency: int = 1) -> dict:
+    """Score disjoint historical horizons with causal analytical GBM forecasts.
+
+    With N calibration prices and horizon h observed trading sessions, origins
+    are N-1+k*h and targets origin+h. An incomplete final horizon is unscored.
+    ``fixed`` fits the first N prices once. ``rolling`` fits the latest N
+    prices through the origin, while ``expanding`` fits every price through
+    the origin. Refit at forecast indices 0, frequency, 2*frequency, ...;
+    intervening forecasts reuse parameters but use the current origin price.
+    Frequency is measured in forecast origins, not calendar or trading days.
+    Fixed calibration requires frequency=1 and preserves the legacy output.
 
     ``alpha`` sets the VaR quantile. The observed violation-rate interval uses
     a separate fixed 95% confidence level and a binomial Wilson approximation.
-    Forecast counts, rates and interval bounds are dimensionless.
+    Forecast counts, rates and interval bounds are dimensionless. Prices,
+    errors and VaR are in the asset currency; time is h/252 years. No RNG or
+    trajectory matrix is needed; working arrays scale with input history and
+    forecast count, with one calibration window processed at a time.
     """
     prices = validate_prices(prices, require_dates=True)
     values = prices.to_numpy()
@@ -53,25 +83,37 @@ def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
         raise ValueError("calibration_observations must be at least 3 prices (2 returns)")
     if type(horizon_days) is not int or horizon_days < 1:
         raise ValueError("horizon_days must be a positive integer")
+    if not isinstance(calibration_mode, str) or calibration_mode not in (
+            "fixed", "rolling", "expanding"):
+        raise ValueError("calibration_mode must be fixed, rolling or expanding")
+    if type(recalibration_frequency) is not int or recalibration_frequency < 1:
+        raise ValueError("recalibration_frequency must be a positive integer")
+    if calibration_mode == "fixed" and recalibration_frequency != 1:
+        raise ValueError("fixed calibration requires recalibration_frequency=1")
     if (isinstance(alpha, bool) or not isinstance(alpha, Real)
             or not np.isfinite(alpha) or not 0 < alpha < 1 or 1 - alpha == 0):
         raise ValueError("alpha must be finite and strictly between 0 and 1")
     if len(values) - calibration_observations < horizon_days:
         raise ValueError("insufficient evaluation prices for one complete horizon")
 
-    training = prices.iloc[:calibration_observations]
-    returns = log_returns(training)
-    mu, sigma = estimate_gbm_params(training)
-    daily_mean = float(returns.mean())
-    daily_std = float(returns.std(ddof=1))
-    if not np.isfinite([mu, sigma, daily_mean, daily_std]).all():
-        raise ValueError("calibration exceeds finite precision")
+    initial_calibration = _calibration_record(prices.iloc[:calibration_observations])
+    calibration = initial_calibration
     duration = horizon_days / TRADING_DAYS
     # Normal symmetry avoids rounding 1-alpha to 1 for tiny valid alpha.
     z = -NormalDist().inv_cdf(alpha)
     rows = []
-    for origin in range(calibration_observations - 1,
-                        len(values) - horizon_days, horizon_days):
+    zero_volatility = False
+    origins = range(calibration_observations - 1,
+                    len(values) - horizon_days, horizon_days)
+    for forecast_index, origin in enumerate(origins):
+        recalibrated = forecast_index == 0
+        if (calibration_mode != "fixed" and forecast_index > 0
+                and forecast_index % recalibration_frequency == 0):
+            first = origin + 1 - calibration_observations if calibration_mode == "rolling" else 0
+            calibration = _calibration_record(prices.iloc[first:origin + 1])
+            recalibrated = True
+        mu, sigma = calibration["mu"], calibration["sigma"]
+        zero_volatility |= sigma == 0
         target = origin + horizon_days
         start = float(values[origin])
         observed = float(values[target])
@@ -97,6 +139,9 @@ def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
                      "var": var, "realized_loss": realized_loss,
                      "var_violation": bool(realized_loss > var), "error": error,
                      "absolute_percentage_error": percentage_error})
+        if calibration_mode != "fixed":
+            rows[-1]["calibration"] = dict(calibration)
+            rows[-1]["calibration_reused"] = not recalibrated
 
     errors = np.array([row["error"] for row in rows])
     violations = sum(row["var_violation"] for row in rows)
@@ -112,17 +157,16 @@ def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
     warnings = []
     if len(rows) < 30:
         warnings.append("Fewer than 30 nonoverlapping forecasts: observed coverage is imprecise.")
-    if sigma == 0:
+    if zero_volatility:
         warnings.append("Zero volatility is a point mass: strict model violation probability is 0, not 1-alpha.")
-    return {
+    if calibration_mode != "fixed":
+        warnings.append(
+            "Recalibration windows share observations; nonoverlapping forecast horizons do not "
+            "guarantee independent violations or a constant violation probability. The Wilson "
+            "interval is descriptive under its stated binomial assumptions.")
+    result = {
         "method": "fixed_initial_calibration_nonoverlapping_historical_forecasts",
-        "calibration": {"first_date": training.index[0].isoformat(),
-                        "last_date": training.index[-1].isoformat(),
-                        "price_count": len(training), "return_count": len(returns),
-                        "mean_daily_log_return": daily_mean,
-                        "std_daily_log_return": daily_std,
-                        "mu": mu, "sigma": sigma,
-                        "trading_days_per_year": TRADING_DAYS, "log_return_std_ddof": 1},
+        "calibration": initial_calibration,
         "evaluation": {"first_origin_date": rows[0]["origin_date"],
                        "last_target_date": rows[-1]["target_date"],
                        "horizon_trading_days": horizon_days,
@@ -138,3 +182,15 @@ def evaluate_out_of_sample(prices: pd.Series, *, calibration_observations: int,
                      "mae_percent": "mean(100 * abs(error) / origin_price)",
                      "coverage_interpretation": "historical observed coverage only"},
     }
+    if calibration_mode != "fixed":
+        result["method"] = f"{calibration_mode}_calibration_nonoverlapping_historical_forecasts"
+        result["protocol"].update({
+            "calibration_mode": calibration_mode,
+            "recalibration_frequency": recalibration_frequency,
+            "recalibration_unit": "forecast_origins",
+            "calibration_window": ("latest calibration_observations prices through refit origin"
+                                   if calibration_mode == "rolling" else
+                                   "all prices from history start through refit origin"),
+            "initial_calibration": "top-level calibration describes the initial fit",
+            "incomplete_horizon_policy": "count remaining observations without scoring"})
+    return result

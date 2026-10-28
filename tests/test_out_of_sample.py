@@ -13,6 +13,7 @@ from calibration.fundamentals import company_snapshot
 from simulation.report import (SimulationConfig, historical_snapshot, read_report,
                                run_simulation, write_report)
 from validation.out_of_sample import evaluate_out_of_sample
+import validation.out_of_sample as oos
 
 
 def dated_prices(n=70):
@@ -233,3 +234,148 @@ def test_cli_opt_in_replay_is_offline_and_legacy_stays_unchanged(tmp_path, monke
     baseline, _ = run_simulation(snapshot, SimulationConfig(steps=2, n_sims=10))
     assert "out_of_sample" not in baseline
     json.dumps(second_report, allow_nan=False)
+
+
+def changing_regime_prices():
+    logs = np.array([0.01, -0.02, 0.03, -0.01, 0.02, -0.04,
+                     0.05, -0.03, 0.04, 0.01, -0.02, 0.03, -0.01])
+    return pd.Series(100 * np.exp(np.r_[0, np.cumsum(logs)]),
+                     index=pd.date_range("2025-01-02", periods=14, freq="B"))
+
+
+@pytest.mark.parametrize("mode", ["rolling", "expanding"])
+def test_refit_windows_chronology_and_independent_formula(mode, monkeypatch):
+    prices = changing_regime_prices()
+    fitted_windows = []
+    original_estimator = oos.estimate_gbm_params
+
+    def record_fit(training):
+        fitted_windows.append(training.copy())
+        return original_estimator(training)
+
+    monkeypatch.setattr(oos, "estimate_gbm_params", record_fit)
+    result = evaluate_out_of_sample(
+        prices, calibration_observations=4, horizon_days=2, alpha=0.9,
+        calibration_mode=mode, recalibration_frequency=2)
+    rows = result["evaluation"]["rows"]
+    assert len(rows) == 5
+    assert len(fitted_windows) == 3  # reuse fit at forecast indices 1 and 3
+    assert result["evaluation"]["unscored_tail_observations"] == 0
+    assert result["protocol"]["recalibration_unit"] == "forecast_origins"
+    assert result["calibration"] == rows[0]["calibration"]
+    for i, row in enumerate(rows):
+        origin = 3 + 2 * i
+        refit_origin = 3 + 4 * (i // 2)
+        first = refit_origin - 3 if mode == "rolling" else 0
+        calibration = row["calibration"]
+        assert row["origin_date"] == prices.index[origin].isoformat()
+        assert row["target_date"] == prices.index[origin + 2].isoformat()
+        assert calibration["first_date"] == prices.index[first].isoformat()
+        assert calibration["last_date"] == prices.index[refit_origin].isoformat()
+        assert calibration["last_date"] <= row["origin_date"] < row["target_date"]
+        assert row["calibration_reused"] is (i % 2 != 0)
+        sample = prices.iloc[first:refit_origin + 1].to_numpy()
+        # Direct scalar formulas independently reconstruct the fitted sample
+        # variance, rather than calling the production calibration functions.
+        returns = np.log(sample[1:] / sample[:-1])
+        mean_log = sum(returns) / len(returns)
+        variance = sum((value - mean_log)**2 for value in returns) / (len(returns) - 1)
+        mu = 252 * (mean_log + variance / 2)
+        sigma = np.sqrt(252 * variance)
+        start = prices.iloc[origin]
+        t = 2 / 252
+        lower = start * np.exp((mu - sigma**2 / 2) * t
+                               + sigma * np.sqrt(t) * norm.ppf(0.1))
+        assert calibration["price_count"] == len(sample)
+        assert calibration["return_count"] == len(sample) - 1
+        assert calibration["mu"] == pytest.approx(mu)
+        assert calibration["sigma"] == pytest.approx(sigma)
+        assert row["predicted_mean"] == pytest.approx(start * np.exp(mu * t))
+        assert row["predicted_median"] == pytest.approx(start * np.exp(2 * mean_log))
+        assert row["lower_quantile"] == pytest.approx(lower)
+        assert row["var"] == pytest.approx(start - lower)
+        assert row["realized_loss"] == start - prices.iloc[origin + 2]
+        assert row["var_violation"] is (row["realized_loss"] > row["var"])
+        if i:
+            assert rows[i - 1]["target_date"] == row["origin_date"]
+    errors = [row["observed_price"] - row["predicted_mean"] for row in rows]
+    metrics = result["evaluation"]["metrics"]
+    assert metrics["forecast_count"] == 5
+    assert metrics["mean_bias"] == pytest.approx(sum(errors) / 5)
+    assert metrics["mae"] == pytest.approx(sum(abs(error) for error in errors) / 5)
+    assert metrics["rmse"] == pytest.approx(np.sqrt(sum(error**2 for error in errors) / 5))
+    assert metrics["violation_count"] == sum(row["var_violation"] for row in rows)
+    assert metrics["observed_violation_rate"] == metrics["violation_count"] / 5
+    assert any("share observations" in warning for warning in result["evaluation"]["warnings"])
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("mode,frequency", [
+    ("fixed", 1), ("rolling", 1), ("rolling", 2),
+    ("expanding", 1), ("expanding", 2),
+])
+def test_future_prices_cannot_change_any_available_forecast(mode, frequency):
+    prices = changing_regime_prices()
+    options = dict(calibration_observations=4, horizon_days=2, alpha=0.9,
+                   calibration_mode=mode, recalibration_frequency=frequency)
+    baseline = evaluate_out_of_sample(prices, **options)
+    prediction_fields = ["origin_date", "origin_price", "target_date",
+                         "predicted_mean", "predicted_median", "lower_quantile", "var"]
+    if mode != "fixed":
+        prediction_fields += ["calibration", "calibration_reused"]
+    for index, row in enumerate(baseline["evaluation"]["rows"]):
+        origin = 3 + 2 * index
+        changed = prices.copy()
+        changed.iloc[origin + 1:] *= np.linspace(0.7, 1.5, len(prices) - origin - 1)
+        altered = evaluate_out_of_sample(changed, **options)
+        for earlier in range(index + 1):
+            expected = baseline["evaluation"]["rows"][earlier]
+            actual = altered["evaluation"]["rows"][earlier]
+            assert {key: expected[key] for key in prediction_fields} == {
+                key: actual[key] for key in prediction_fields}
+        assert baseline["calibration"] == altered["calibration"]
+
+
+@pytest.mark.parametrize("mode", ["rolling", "expanding"])
+def test_incomplete_horizon_and_long_refit_frequency(mode):
+    result = evaluate_out_of_sample(
+        changing_regime_prices().iloc[:-1], calibration_observations=4,
+        horizon_days=2, calibration_mode=mode, recalibration_frequency=100)
+    rows = result["evaluation"]["rows"]
+    assert len(rows) == 4
+    assert result["evaluation"]["unscored_tail_observations"] == 1
+    assert all(row["calibration"] == result["calibration"] for row in rows)
+    assert [row["calibration_reused"] for row in rows] == [False, True, True, True]
+
+
+@pytest.mark.parametrize("mode,frequency", [
+    ("invalid", 1), (None, 1), ([], 1), ("rolling", 0),
+    ("expanding", -1), ("rolling", 1.5), ("rolling", True),
+    ("expanding", None), ("fixed", 2),
+])
+def test_invalid_calibration_protocol(mode, frequency):
+    with pytest.raises(ValueError):
+        evaluate_out_of_sample(changing_regime_prices(), calibration_observations=4,
+                               calibration_mode=mode, recalibration_frequency=frequency)
+
+
+def test_fixed_default_retains_legacy_shape():
+    prices = changing_regime_prices()
+    default = evaluate_out_of_sample(prices, calibration_observations=4)
+    explicit = evaluate_out_of_sample(prices, calibration_observations=4,
+                                      calibration_mode="fixed", recalibration_frequency=1)
+    assert default == explicit
+    assert default["method"] == "fixed_initial_calibration_nonoverlapping_historical_forecasts"
+    assert "calibration_mode" not in default["protocol"]
+    assert all("calibration" not in row for row in default["evaluation"]["rows"])
+
+
+def test_zero_volatility_warning_accounts_for_all_refits():
+    prices = pd.Series([100., 100., 100., 101., 99., 102.],
+                       index=pd.date_range("2025-01-02", periods=6, freq="B"))
+    result = evaluate_out_of_sample(prices, calibration_observations=3,
+                                    calibration_mode="rolling")
+    rows = result["evaluation"]["rows"]
+    assert rows[0]["calibration"]["sigma"] == 0
+    assert rows[-1]["calibration"]["sigma"] > 0
+    assert any("Zero volatility" in warning for warning in result["evaluation"]["warnings"])
